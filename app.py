@@ -43,70 +43,68 @@ URLS_DATAJUD = {
 
 def consultar_api_datajud(tribunal, nome_juiz, termo_busca="Dano Moral"):
     """
-    Busca Estrita na API do CNJ.
-    Obrigatório conter o Nome do Juiz E o Assunto.
+    Busca no DataJud procurando as palavras do nome do juiz DENTRO das movimentações.
+    Usa lógica AND para todas as palavras.
     """
     url = URLS_DATAJUD.get(tribunal)
     if not url:
         return "Tribunal não mapeado na API Pública."
 
-    # ESTRATÉGIA CORRIGIDA:
-    # Usamos sintaxe de busca textual direta com operador AND.
-    # Ex: "João da Silva" AND "Dano Moral"
-    # Isso impede que traga apenas o assunto com outro juiz.
+    # Limpeza de caracteres especiais
+    nome_limpo = re.sub(r'[^a-zA-Z0-9\s]', '', nome_juiz)
+    tema_limpo = re.sub(r'[^a-zA-Z0-9\s]', '', termo_busca)
     
-    # Limpeza básica para evitar erro de sintaxe
-    nome_limpo = nome_juiz.replace('"', '') 
-    tema_limpo = termo_busca.replace('"', '')
-    
-    query_rigorosa = f'"{nome_limpo}" AND "{tema_limpo}"'
+    # Montamos uma query que exige TODAS as palavras do nome + o tema
+    # Ex: se digitar "João Silva", a query procura: (+João +Silva) E (+Dano +Moral)
+    query_final = f"({nome_limpo}) AND ({tema_limpo})"
     
     payload = {
-        "size": 15, # Traz 15 para termos margem
+        "size": 20,
         "query": {
-            "query_string": {
-                # Busca em TODO o texto do processo (Movimentos, Órgão, Capa)
-                "query": query_rigorosa
+            "simple_query_string": {
+                "query": query_final,
+                # Procura no campo genérico (textão) e nas movimentações onde o juiz assina
+                "fields": ["movimentos.complementos.descricao", "movimentos.nome", "orgaoJulgador.nome"],
+                "default_operator": "and" # O PULO DO GATO: Obriga ter todas as palavras
             }
         },
         "sort": [{"dataAjuizamento": "desc"}]
     }
 
-    headers = {
-        "Content-Type": "application/json"
-    }
+    headers = {"Content-Type": "application/json"}
     if "DATAJUD_API_KEY" in st.secrets:
         headers["Authorization"] = f"ApiKey {st.secrets['DATAJUD_API_KEY']}"
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=20)
+        response = requests.post(url, json=payload, headers=headers, timeout=25)
         
         if response.status_code == 200:
             dados = response.json()
             hits = dados.get("hits", {}).get("hits", [])
             
+            if not hits:
+                return [] # Retorna lista vazia se não achar nada (para tratar na tela)
+
             lista_processos = []
             for hit in hits:
                 source = hit.get("_source", {})
                 
-                # Formata a lista de assuntos
-                assuntos_lista = [a.get("nome") for a in source.get("assuntos", [])]
-                assuntos_texto = ", ".join(assuntos_lista)
+                # Formatação dos dados
+                assuntos = ", ".join([a.get("nome") for a in source.get("assuntos", [])])
+                orgao = source.get("orgaoJulgador", {}).get("nome", "Vara não informada")
                 
-                # Tenta pegar o nome da vara/juízo
-                orgao = source.get("orgaoJulgador", {}).get("nome", "Não informado")
-                
-                # FILTRO DE SEGURANÇA (PYTHON):
-                # Às vezes a busca traz o nome do juiz porque ele era advogado no passado ou é parte.
-                # Aqui verificamos se o nome do juiz não está totalmente fora de contexto, 
-                # mas confiamos na query estrita acima.
+                # Tenta achar o nome do juiz nos movimentos para exibir na tabela
+                # (Isso é apenas visual, a busca já filtrou)
+                movs = source.get("movimentos", [])
+                ultimo_mov = movs[0].get("nome") if movs else "Sem movimento"
                 
                 proc = {
                     "numero": source.get("numeroProcesso"),
                     "classe": source.get("classe", {}).get("nome"),
-                    "assuntos": assuntos_texto,
+                    "assuntos": assuntos,
                     "data": source.get("dataAjuizamento"),
-                    "orgao": orgao
+                    "orgao": orgao,
+                    "ultimo_movimento": ultimo_mov
                 }
                 lista_processos.append(proc)
             
@@ -116,7 +114,6 @@ def consultar_api_datajud(tribunal, nome_juiz, termo_busca="Dano Moral"):
             
     except Exception as e:
         return f"Erro de conexão: {e}"
-
 # --- AGENTES DE INTELIGÊNCIA ---
 
 def agente_peticao_inicial_com_calculo(relato_texto, imagens_upload, tribunal):
@@ -305,5 +302,6 @@ elif menu == "3. Jurimetria Real":
         else:
             st.warning("Sem clientes.")
     except Exception as e: st.error(str(e))
+
 
 
