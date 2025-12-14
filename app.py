@@ -7,9 +7,11 @@ from docx import Document
 from io import BytesIO
 from PIL import Image
 import re
+import requests
+import json
 
 # --- CONFIGURAÇÕES INICIAIS ---
-st.set_page_config(page_title="Advogado AI - Estrategista", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Advogado AI - Dados Reais", layout="wide", page_icon="⚖️")
 
 # 1. Configurar Google Gemini
 try:
@@ -28,43 +30,85 @@ def get_db_connection():
         database=st.secrets["database"]["DB_NAME"]
     )
 
-# --- AGENTES DE INTELIGÊNCIA (PROMPTS AVANÇADOS) ---
+# 3. Configuração DATAJUD (Mapeamento de Tribunais)
+URLS_DATAJUD = {
+    "TJRJ": "https://api-publica.datajud.cnj.jus.br/api_publica_tjrj/_search",
+    "TJSP": "https://api-publica.datajud.cnj.jus.br/api_publica_tjsp/_search",
+    "TJMG": "https://api-publica.datajud.cnj.jus.br/api_publica_tjmg/_search",
+    "TJRS": "https://api-publica.datajud.cnj.jus.br/api_publica_tjrs/_search",
+    "TJBA": "https://api-publica.datajud.cnj.jus.br/api_publica_tjba/_search"
+}
+
+# --- FUNÇÕES DE BUSCA REAL (DATAJUD) ---
+
+def consultar_api_datajud(tribunal, nome_juiz, termo_busca="Dano Moral"):
+    """
+    Busca processos REAIS na API do CNJ usando ElasticSearch.
+    """
+    url = URLS_DATAJUD.get(tribunal)
+    if not url:
+        return "Tribunal não mapeado na API Pública."
+
+    # Query ElasticSearch para buscar nome do juiz E o assunto
+    payload = {
+        "size": 10, # Trazer 10 processos recentes
+        "query": {
+            "bool": {
+                "must": [
+                    # Busca textual genérica (pode ser no nome do juiz ou no movimento)
+                    {"query_string": {"query": f'"{nome_juiz}" AND "{termo_busca}"'}}
+                ]
+            }
+        },
+        "sort": [{"dataAjuizamento": "desc"}] # Os mais recentes primeiro
+    }
+
+    # Headers (Se tiver API Key do DataJud nos secrets, usa. Senão, tenta sem.)
+    headers = {
+        "Content-Type": "application/json"
+    }
+    if "DATAJUD_API_KEY" in st.secrets:
+        headers["Authorization"] = f"ApiKey {st.secrets['DATAJUD_API_KEY']}"
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        if response.status_code == 200:
+            dados = response.json()
+            hits = dados.get("hits", {}).get("hits", [])
+            
+            lista_processos = []
+            for hit in hits:
+                source = hit.get("_source", {})
+                proc = {
+                    "numero": source.get("numeroProcesso"),
+                    "classe": source.get("classe", {}).get("nome"),
+                    "assuntos": [a.get("nome") for a in source.get("assuntos", [])],
+                    "data": source.get("dataAjuizamento"),
+                    "orgao": source.get("orgaoJulgador", {}).get("nome")
+                }
+                lista_processos.append(proc)
+            
+            return lista_processos
+        else:
+            return f"Erro na API DataJud: {response.status_code} - {response.text}"
+            
+    except Exception as e:
+        return f"Erro de conexão: {e}"
+
+# --- AGENTES DE INTELIGÊNCIA ---
 
 def agente_peticao_inicial_com_calculo(relato_texto, imagens_upload, tribunal):
-    """
-    Analisa fatos, CALCULA o valor baseando-se no teto do tribunal e redige a peça.
-    """
     lista_conteudo = []
-    
     prompt_sistema = f"""
-    Você é um Advogado Sênior e Estrategista Processual no {tribunal}.
-    
-    ETAPA 1: CÁLCULO DO VALOR DA CAUSA (Quantum Indenizatório)
-    - Pesquise na sua base de conhecimento a jurisprudência MAIS ALTA deste tribunal ({tribunal}) para casos idênticos a este.
-    - Aplique o "Método Bifásico" para fixar o valor no TETO possível.
-    - O objetivo é pedir o máximo legalmente defensável.
-    
-    ETAPA 2: REDAÇÃO DA PEÇA
-    Redija a Petição Inicial completa.
-    
-    ESTRUTURA OBRIGATÓRIA:
-    1. Endereçamento e Qualificação.
-    2. DOS FATOS: Resuma o relato e o que consta nas provas visuais.
-    3. DO DIREITO E DA JURISPRUDÊNCIA: Cite súmulas do {tribunal} que favoreçam o valor alto.
-    4. DOS PEDIDOS: Liquide os pedidos com o valor calculado na Etapa 1.
-    5. VALOR DA CAUSA: Exiba o valor total somado.
-    
-    IMPORTANTE:
-    No final do texto, adicione uma linha separada exatamente assim:
-    [[VALOR_CALCULADO: R$ 0.000,00]]
-    (Substitua pelo valor que você calculou para eu salvar no banco de dados).
+    Você é um Advogado Sênior. 
+    1. Calcule o valor da causa (Quantum Indenizatório) com base no teto do {tribunal}.
+    2. Redija a Petição Inicial.
+    3. No final, coloque: [[VALOR_CALCULADO: R$ 0.000,00]]
     """
-    
     lista_conteudo.append(prompt_sistema)
-    lista_conteudo.append(f"RELATO: {relato_texto}")
+    lista_conteudo.append(f"Fatos: {relato_texto}")
     
     if imagens_upload:
-        lista_conteudo.append("PROVAS VISUAIS (ANEXOS):")
         for arq in imagens_upload:
             try:
                 img = Image.open(arq)
@@ -77,189 +121,165 @@ def agente_peticao_inicial_com_calculo(relato_texto, imagens_upload, tribunal):
     try:
         response = model.generate_content(lista_conteudo, request_options={"timeout": 600})
         return response.text
-    except Exception as e:
-        return f"Erro IA: {str(e)}"
+    except Exception as e: return str(e)
 
-def agente_jurimetria_com_prova(nome_juiz, tribunal, fatos_cliente):
+def agente_jurimetria_com_dados_reais(nome_juiz, tribunal, fatos_cliente, processos_reais):
     """
-    Jurimetria que busca o CASO DE MAIOR VALOR já julgado procedente.
+    Analisa os processos REAIS retornados pela API e encontra o melhor argumento.
     """
     prompt = f"""
-    Atue como um Especialista em Jurimetria e DataJud.
+    Atue como Especialista em Jurimetria.
     
-    DADOS:
-    - Magistrado: {nome_juiz} ({tribunal})
-    - Caso do Cliente: {fatos_cliente}
+    DADOS DO CASO:
+    - Juiz Alvo: {nome_juiz} ({tribunal})
+    - Nosso Caso: {fatos_cliente}
     
-    MISSÃO:
-    Investigue o histórico desse juiz (ou da vara onde ele atua) buscando precedentes favoráveis ao consumidor/autor.
+    BASE DE DADOS REAL (DATAJUD/CNJ):
+    Abaixo segue uma lista de processos REAIS encontrados desse juiz/tribunal via API:
+    {json.dumps(processos_reais, indent=2, ensure_ascii=False)}
     
-    SAÍDA ESTRUTURADA (Use Markdown):
+    TAREFA:
+    1. Analise a lista acima. Escolha UM processo real para usar como "Processo Paradigma".
+    2. Se a lista estiver vazia ou não tiver o juiz exato, use seu conhecimento interno, MAS AVISE que não encontrou na API.
+    3. Gere a análise estratégica.
     
-    ### 🏆 O Caso de Ouro (Maior Condenação Encontrada)
-    *   **Processo Referência:** (Cite um número de processo real ou fictício plausível com formato CNJ ex: 000xxxx-xx.20xx.8.xx.xxxx que sirva de paradigma).
-    *   **Resumo do Caso:** (Descreva brevemente o que aconteceu naquele processo).
-    *   **Valor Concedido:** R$ (Valor alto).
-    *   **Por que ele deu esse valor?** (Qual foi o agravante? Ex: Negativação repetida, desvio produtivo, ofensa grave).
+    SAÍDA (Markdown):
+    ### 🏆 O Processo Paradigma (Real)
+    *   **Número:** [Use o número exato do JSON acima]
+    *   **Data:** [Data do JSON]
+    *   **Classe/Assunto:** [Do JSON]
+    *   **Análise:** Por que este caso serve de exemplo para nós? (Se for assunto similar).
     
-    ### 📊 Comparativo com o Nosso Caso
-    *   **Nossa Chance:** [0-100]%
-    *   **Argumento para aumentar nossa condenação:** O que devemos copiar do "Caso de Ouro" para tentar pegar o mesmo valor?
+    ### 💰 Expectativa de Valor
+    Baseado no padrão desse tribunal e nesses casos listados, qual o teto realista?
     
-    ### ⚠️ Alerta de Risco
-    O que esse juiz costuma indeferir?
+    ### ⚠️ Risco Detectado
+    Algum desses processos foi improcedente?
     """
     try:
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Erro Jurimetria: {e}"
+        return f"Erro Jurimetria IA: {e}"
 
 def agente_comunicacao(fase, nome_cliente, extra=None):
-    prompt = f"Crie msg WhatsApp curta para {nome_cliente}. Fase: {fase}. {f'Obs: {extra}' if extra else ''}."
+    prompt = f"Crie msg WhatsApp para {nome_cliente}. Fase: {fase}. {extra if extra else ''}."
     response = model.generate_content(prompt)
     return response.text
 
 # --- INTERFACE ---
-st.title("⚖️ Advogado AI - Sistema Estrategista")
+st.title("⚖️ Advogado AI - Sistema Estrategista (DataJud Real)")
 
-menu = st.sidebar.radio("Navegação", ["1. Novo Caso (Auto-Preço)", "2. Carteira (CRM)", "3. Jurimetria Comparativa"])
+menu = st.sidebar.radio("Navegação", ["1. Novo Caso", "2. Carteira (CRM)", "3. Jurimetria Real"])
 
-# --- ABA 1: NOVO CASO (SEM INPUT DE VALOR) ---
-if menu == "1. Novo Caso (Auto-Preço)":
+# --- ABA 1: NOVO CASO ---
+if menu == "1. Novo Caso":
     st.header("📂 Cadastro Inteligente")
-    st.info("A IA calculará automaticamente o valor máximo da causa baseada na jurisprudência local.")
-    
     with st.form("form_inicial"):
         col1, col2 = st.columns(2)
-        cliente = col1.text_input("Nome do Cliente")
+        cliente = col1.text_input("Cliente")
         telefone = col1.text_input("WhatsApp")
-        tribunal = col2.selectbox("Tribunal", ["TJRJ", "TJSP", "TJMG", "TJRS", "TJBA", "Outros"])
-        
-        # REMOVIDO O CAMPO VALOR MANUALMENTE
-        # A IA vai decidir isso.
-        
-        relato = st.text_area("Fatos do Caso (Seja detalhado para a IA calcular bem)", height=150)
-        provas = st.file_uploader("Provas (Prints/Docs)", type=["png","jpg"], accept_multiple_files=True)
-        
-        btn_gerar = st.form_submit_button("🤖 Calcular Valor e Gerar Inicial")
+        tribunal = col2.selectbox("Tribunal", ["TJRJ", "TJSP", "TJMG", "TJRS", "TJBA"])
+        relato = st.text_area("Fatos", height=150)
+        provas = st.file_uploader("Provas", type=["png","jpg"], accept_multiple_files=True)
+        btn_gerar = st.form_submit_button("🤖 Gerar Inicial")
 
     if btn_gerar and cliente and relato:
-        with st.spinner(f"Consultando jurisprudência do {tribunal} para calcular o teto indenizatório..."):
+        with st.spinner(f"Calculando valor e gerando peça..."):
+            texto = agente_peticao_inicial_com_calculo(relato, provas, tribunal)
             
-            # 1. Gera a petição e o cálculo
-            texto_gerado = agente_peticao_inicial_com_calculo(relato, provas, tribunal)
+            valor = "Sob Análise"
+            match = re.search(r"\[\[VALOR_CALCULADO:\s*(.*?)\]\]", texto)
+            if match: valor = match.group(1)
             
-            # 2. Tenta extrair o valor que a IA calculou usando Regex
-            # Procura por [[VALOR_CALCULADO: R$ ...]]
-            valor_extraido = "Sob Análise"
-            match = re.search(r"\[\[VALOR_CALCULADO:\s*(.*?)\]\]", texto_gerado)
-            if match:
-                valor_extraido = match.group(1)
-            
-            # 3. Salvar no Banco
             try:
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                # Salva o valor calculado no histórico para referência
-                historico_rico = f"RELATO_FATOS: {relato} || VALOR_IA: {valor_extraido} || DATA: {datetime.now()}"
-                
+                hist = f"RELATO_FATOS: {relato} || VALOR_IA: {valor} || DATA: {datetime.now()}"
                 sql = "INSERT INTO processos (cliente_nome, cliente_telefone, tribunal, status, historico) VALUES (%s, %s, %s, %s, %s)"
-                cursor.execute(sql, (cliente, telefone, tribunal, "Inicial Pronta", historico_rico))
+                cursor.execute(sql, (cliente, telefone, tribunal, "Inicial Pronta", hist))
                 conn.commit()
                 conn.close()
-                st.toast(f"Salvo! Valor Sugerido: {valor_extraido}", icon="💰")
-            except Exception as e:
-                st.error(f"Erro DB: {e}")
+                st.toast(f"Salvo! Valor: {valor}", icon="💰")
+            except Exception as e: st.error(str(e))
             
-            # 4. Mostra o Valor em Destaque
-            st.markdown(f"### 💰 Valor da Causa Sugerido pela IA: **{valor_extraido}**")
-            st.caption("Baseado no teto da jurisprudência recente para este Tribunal.")
-            
-            st.text_area("Petição Inicial", value=texto_gerado, height=400)
-            
-            # Download
-            doc = Document()
-            doc.add_paragraph(texto_gerado)
-            buffer = BytesIO()
-            doc.save(buffer)
-            buffer.seek(0)
-            st.download_button("Baixar .DOCX", data=buffer, file_name=f"{cliente}_Inicial.docx")
+            st.markdown(f"### 💰 Valor Sugerido: **{valor}**")
+            st.download_button("Baixar Inicial", data=texto, file_name=f"{cliente}.txt")
 
 # --- ABA 2: CRM ---
 elif menu == "2. Carteira (CRM)":
-    st.header("🗂️ Gestão de Processos")
+    st.header("🗂️ Gestão")
     try:
         conn = get_db_connection()
         df = pd.read_sql("SELECT * FROM processos ORDER BY id DESC", conn)
         conn.close()
-        
         if len(df) > 0:
-            selecao = st.selectbox("Cliente", df["cliente_nome"])
-            dados = df[df["cliente_nome"] == selecao].iloc[0]
+            sel = st.selectbox("Cliente", df["cliente_nome"])
+            dados = df[df["cliente_nome"] == sel].iloc[0]
+            st.write(f"Tribunal: {dados['tribunal']} | Status: {dados['status']}")
             
-            st.write(f"**Tribunal:** {dados['tribunal']} | **Status:** {dados['status']}")
-            
-            # Tenta mostrar o valor que a IA calculou lendo o histórico
-            if "VALOR_IA:" in dados['historico']:
-                val = dados['historico'].split("VALOR_IA:")[1].split("||")[0]
-                st.info(f"💵 Valor Calculado na Inicial: {val}")
-            
-            tab1, tab2 = st.tabs(["Atualizações", "Comunicação"])
-            with tab1:
-                st.write(dados['historico'])
-            with tab2:
-                data = st.date_input("Data Audiência")
-                if st.button("Gerar Aviso"):
-                    st.code(agente_comunicacao("Audiência", dados["cliente_nome"], str(data)))
+            tab1, tab2 = st.tabs(["Histórico", "Ações"])
+            with tab1: st.write(dados['historico'])
+            with tab2: 
+                dt = st.date_input("Data Audiência")
+                if st.button("Gerar Aviso"): 
+                    st.code(agente_comunicacao("Audiência", dados['cliente_nome'], str(dt)))
+    except: pass
 
-    except Exception as e: st.error(f"Erro: {e}")
-
-# --- ABA 3: JURIMETRIA AVANÇADA ---
-elif menu == "3. Jurimetria Comparativa":
-    st.header("🏆 Busca de Precedente de Valor Máximo")
-    st.info("A IA vai buscar o 'Caso de Ouro' (maior valor) deste Juiz para o seu processo.")
+# --- ABA 3: JURIMETRIA REAL (DATAJUD) ---
+elif menu == "3. Jurimetria Real":
+    st.header("🏆 Busca de Precedentes Reais (DataJud)")
+    st.info("O sistema vai conectar na API do CNJ para buscar números de processos reais.")
     
     try:
         conn = get_db_connection()
-        df_clientes = pd.read_sql("SELECT cliente_nome, historico, tribunal FROM processos", conn)
+        df = pd.read_sql("SELECT cliente_nome, historico, tribunal FROM processos", conn)
         conn.close()
         
-        if len(df_clientes) > 0:
-            col_cli, col_juiz = st.columns(2)
+        if len(df) > 0:
+            col1, col2 = st.columns(2)
+            cli = col1.selectbox("Cliente", df["cliente_nome"])
             
-            cliente_sel = col_cli.selectbox("Selecione o Cliente:", df_clientes["cliente_nome"])
-            dados_caso = df_clientes[df_clientes["cliente_nome"] == cliente_sel].iloc[0]
+            # Recupera dados
+            dado = df[df["cliente_nome"] == cli].iloc[0]
+            tribunal_auto = dado["tribunal"]
+            if "RELATO_FATOS:" in dado["historico"]:
+                fatos = dado["historico"].split("RELATO_FATOS:")[1].split("||")[0]
+            else: fatos = dado["historico"]
             
-            # Extração automática dos dados salvos
-            tribunal_auto = dados_caso["tribunal"]
-            historico_texto = dados_caso["historico"]
+            st.caption(f"Caso: {fatos[:100]}...")
             
-            if "RELATO_FATOS:" in historico_texto:
-                fatos_auto = historico_texto.split("RELATO_FATOS:")[1].split("||")[0]
-            else:
-                fatos_auto = historico_texto
+            juiz = col2.text_input("Nome do Juiz(a):")
+            tema_busca = col2.text_input("Palavra-Chave da Busca (Ex: Dano Moral)", value="Dano Moral")
             
-            st.caption(f"**Analisando caso:** {fatos_auto[:100]}...")
-            
-            juiz_nome = col_juiz.text_input("Nome do Juiz(a):")
-            
-            if st.button("🔍 Buscar Processo de Referência"):
-                if juiz_nome:
-                    with st.spinner(f"Varrendo decisões do(a) {juiz_nome} em busca do teto..."):
+            if st.button("🔍 Investigar no CNJ"):
+                if juiz:
+                    with st.status("Investigando...", expanded=True) as status:
+                        # 1. Busca na API DataJud
+                        status.write("Conectando ao DataJud/CNJ...")
+                        processos_encontrados = consultar_api_datajud(tribunal_auto, juiz, tema_busca)
                         
-                        analise = agente_jurimetria_com_prova(
-                            nome_juiz=juiz_nome,
-                            tribunal=tribunal_auto,
-                            fatos_cliente=fatos_auto
-                        )
-                        
-                        st.markdown("---")
-                        st.markdown(analise)
+                        if isinstance(processos_encontrados, list) and len(processos_encontrados) > 0:
+                            status.write(f"✅ Encontrados {len(processos_encontrados)} processos reais!")
+                            st.dataframe(pd.DataFrame(processos_encontrados)) # Mostra tabela bruta
+                            
+                            # 2. Analisa com Gemini
+                            status.write("Gemini está lendo os processos...")
+                            analise = agente_jurimetria_com_dados_reais(
+                                juiz, tribunal_auto, fatos, processos_encontrados
+                            )
+                            st.markdown("---")
+                            st.markdown(analise)
+                            
+                        elif isinstance(processos_encontrados, list) and len(processos_encontrados) == 0:
+                            st.warning("A API do CNJ retornou 0 processos com esse nome de juiz/termo exato.")
+                            st.info("Dica: Tente apenas o sobrenome do juiz ou mude a palavra-chave.")
+                        else:
+                            st.error(f"Erro na API: {processos_encontrados}")
+                            
+                        status.update(label="Concluído!", state="complete", expanded=False)
                 else:
-                    st.warning("Informe o Juiz.")
+                    st.warning("Digite o Juiz.")
         else:
-            st.warning("Cadastre um cliente primeiro.")
-            
-    except Exception as e:
-        st.error(f"Erro: {e}")
+            st.warning("Sem clientes.")
+    except Exception as e: st.error(str(e))
