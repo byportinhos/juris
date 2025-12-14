@@ -4,4 +4,4 @@ google-generativeai
 pandas
 python-docx
 Pillow
-duckduckgo-search
+duckduckgo-search>=6.0.0
