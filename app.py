@@ -14,7 +14,7 @@ st.set_page_config(page_title="Sistema JEC AI (Gemini)", layout="wide", page_ico
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     # Usando o Flash que é rápido e multimodal
-    model = genai.GenerativeModel('gemini-1.5-flash') 
+    model = genai.GenerativeModel('gemini-2.5-flash') 
 except Exception as e:
     st.error("Erro na API Key do Google. Configure os Secrets.")
     st.stop()
@@ -252,4 +252,5 @@ elif menu == "3. Análise de Juízes (Jurimetria)":
                 st.markdown(analise)
         else:
             st.warning("Digite o nome do juiz.")
+
 
