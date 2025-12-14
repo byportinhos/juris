@@ -132,6 +132,7 @@ if menu == "1. Novo Caso (Pré-Processual)":
     st.header("📂 Cadastro de Cliente e Geração de Inicial")
     st.info("O Gemini analisará o relato e os prints (provas) para montar a peça.")
     
+    # 1. O Formulário coleta os dados
     with st.form("form_inicial"):
         col1, col2 = st.columns(2)
         with col1:
@@ -142,115 +143,49 @@ if menu == "1. Novo Caso (Pré-Processual)":
             valor_causa = st.number_input("Valor Estimado da Causa (R$)", min_value=0.0)
             
         relato = st.text_area("Relato dos Fatos", height=150)
-        provas = st.file_uploader("Provas (Prints de Conversas, Fotos, Contratos)", 
+        provas = st.file_uploader("Provas (Prints/Fotos)", 
                                   type=["png", "jpg", "jpeg"], 
                                   accept_multiple_files=True)
         
+        # O botão de envio fica DENTRO do form
         btn_gerar = st.form_submit_button("🤖 Analisar Provas e Escrever Petição")
-        
-        if btn_gerar and cliente and relato:
-            with st.spinner("Gemini Vision está lendo os prints e escrevendo a petição..."):
-                # 1. Chamar IA
-                peticao_texto = agente_peticao_inicial(relato, provas)
-                
-                # 2. Salvar no MySQL Hostgator
-                try:
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    sql = """INSERT INTO processos 
-                             (cliente_nome, cliente_telefone, tribunal, status, historico) 
-                             VALUES (%s, %s, %s, %s, %s)"""
-                    historico_inicial = f"{datetime.now()}: Petição gerada via IA."
-                    cursor.execute(sql, (cliente, telefone, tribunal, "Petição Pronta", historico_inicial))
-                    conn.commit()
-                    conn.close()
-                    st.toast("Processo Salvo no Banco de Dados!", icon="💾")
-                except Exception as e:
-                    st.error(f"Erro ao salvar no banco: {e}")
-                
-                # 3. Exibir Resultado
-                st.subheader("Minuta Gerada")
-                st.text_area("Copie o texto:", value=peticao_texto, height=400)
-                
-                # Botão Download DOCX
-                doc = Document()
-                doc.add_heading(f'Petição Inicial - {cliente}', 0)
-                doc.add_paragraph(peticao_texto)
-                buffer = BytesIO()
-                doc.save(buffer)
-                buffer.seek(0)
-                st.download_button("📥 Baixar .DOCX", data=buffer, file_name=f"Inicial_{cliente}.docx")
 
-# --- TELA 2: CRM E GESTÃO ---
-elif menu == "2. Gestão de Processos (CRM)":
-    st.header("🗂️ Carteira de Clientes")
-    
-    # Carregar dados do MySQL
-    try:
-        conn = get_db_connection()
-        df = pd.read_sql("SELECT * FROM processos ORDER BY id DESC", conn)
-        conn.close()
-        
-        if len(df) > 0:
-            proc_selecionado = st.selectbox("Selecione o Cliente:", df["cliente_nome"])
-            # Filtrar dados do cliente selecionado
-            dados = df[df["cliente_nome"] == proc_selecionado].iloc[0]
+    # 2. A Lógica acontece FORA do form (Note a indentação para a esquerda)
+    if btn_gerar and cliente and relato:
+        with st.spinner("Gemini Vision está lendo os prints e escrevendo a petição..."):
+            # A. Chamar IA
+            peticao_texto = agente_peticao_inicial(relato, provas)
             
-            st.markdown("---")
-            colA, colB, colC = st.columns(3)
-            colA.metric("Status", dados["status"])
-            colB.metric("Tribunal", dados["tribunal"])
-            colC.metric("ID Sistema", str(dados["id"]))
+            # B. Salvar no MySQL Hostgator
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                sql = """INSERT INTO processos 
+                            (cliente_nome, cliente_telefone, tribunal, status, historico) 
+                            VALUES (%s, %s, %s, %s, %s)"""
+                historico_inicial = f"{datetime.now()}: Petição gerada via IA."
+                cursor.execute(sql, (cliente, telefone, tribunal, "Petição Pronta", historico_inicial))
+                conn.commit()
+                conn.close()
+                st.toast("Processo Salvo no Banco de Dados!", icon="💾")
+            except Exception as e:
+                st.error(f"Erro ao salvar no banco: {e}")
             
-            st.subheader("⚙️ Ações do Processo")
+            # C. Exibir Resultado
+            st.subheader("Minuta Gerada")
+            st.text_area("Copie o texto:", value=peticao_texto, height=400)
             
-            # Abas de fases
-            tab1, tab2, tab3 = st.tabs(["Registro TJ", "Audiência", "Julgamento"])
+            # D. Botão Download (Agora funciona pois está fora do form)
+            doc = Document()
+            doc.add_heading(f'Petição Inicial - {cliente}', 0)
+            doc.add_paragraph(peticao_texto)
+            buffer = BytesIO()
+            doc.save(buffer)
+            buffer.seek(0)
             
-            with tab1:
-                st.write("Após protocolar no site do TJ, atualize aqui:")
-                novo_num = st.text_input("Número do Processo (CNJ)")
-                if st.button("Registrar Protocolo"):
-                    # Aqui faria o UPDATE no MySQL
-                    st.success(f"Processo {novo_num} vinculado ao cliente!")
-            
-            with tab2:
-                st.write("Prepare o cliente para a audiência.")
-                data_aud = st.date_input("Data da Audiência")
-                if st.button("Gerar Mensagem de Preparação"):
-                    msg = agente_comunicacao("Marcação de Audiência", dados["cliente_nome"], str(data_aud))
-                    st.code(msg, language="text")
-                
-                st.markdown("#### 🕵️ Verificação de Remarcação")
-                st.caption("O sistema verifica Diários Oficiais automaticamente (Simulado 3x ao dia).")
-                if st.button("Forçar Verificação Agora"):
-                    st.info("Consultando API do Tribunal...")
-                    st.success("Nenhuma remarcação encontrada no D.O. de hoje.")
-
-            with tab3:
-                st.write("Histórico Completo:")
-                st.text(dados["historico"])
-
-        else:
-            st.warning("Nenhum processo cadastrado ainda.")
-            
-    except Exception as e:
-        st.error(f"Erro de conexão com Hostgator: {e}")
-
-# --- TELA 3: JURIMETRIA ---
-elif menu == "3. Análise de Juízes (Jurimetria)":
-    st.header("👨‍⚖️ Investigador de Juízes")
-    
-    col1, col2 = st.columns(2)
-    juiz = col1.text_input("Nome do Magistrado")
-    comarca = col2.text_input("Comarca/Vara")
-    
-    if st.button("Analisar Perfil"):
-        if juiz:
-            with st.spinner(f"Investigando {juiz} na base de dados..."):
-                analise = agente_jurimetria(juiz, comarca)
-                st.markdown(analise)
-        else:
-            st.warning("Digite o nome do juiz.")
-
-
+            st.download_button(
+                label="📥 Baixar .DOCX", 
+                data=buffer, 
+                file_name=f"Inicial_{cliente}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
