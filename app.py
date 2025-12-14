@@ -7,21 +7,20 @@ from docx import Document
 from io import BytesIO
 from PIL import Image
 import re
-# NOVA BIBLIOTECA DE BUSCA (ESTÁVEL)
 from duckduckgo_search import DDGS
 
 # --- CONFIGURAÇÕES GERAIS ---
-st.set_page_config(page_title="Advogado AI - Multimodal", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Advogado AI - Final", layout="wide", page_icon="⚖️")
 
 # 1. Configurar Gemini
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    model = genai.GenerativeModel('gemini-2.5-flash') 
+    model = genai.GenerativeModel('gemini-1.5-flash') 
 except:
     st.error("ERRO: Configure a GOOGLE_API_KEY nos Secrets do Streamlit.")
     st.stop()
 
-# 2. Conexão Banco de Dados (Hostgator)
+# 2. Conexão Banco de Dados
 def get_db_connection():
     return mysql.connector.connect(
         host=st.secrets["database"]["DB_HOST"],
@@ -30,54 +29,51 @@ def get_db_connection():
         database=st.secrets["database"]["DB_NAME"]
     )
 
-# --- FUNÇÕES DE BUSCA (JURIMETRIA VIA DUCKDUCKGO) ---
+# --- FUNÇÃO DE BUSCA ROBUSTA (DUCKDUCKGO BRASIL) ---
 def buscar_jurisprudencia_ddg(nome_juiz, tema):
     """
-    Usa DuckDuckGo para evitar bloqueio 429 do Google.
+    Busca forçada na região Brasil (br-pt) para encontrar Jusbrasil/Tribunais.
     """
     resultados = []
-    # Query focada: Tenta achar Jusbrasil, Escavador ou sites de tribunais
-    query = f'{nome_juiz} "{tema}" sentença site:jusbrasil.com.br OR site:escavador.com'
+    
+    # Query Simplificada: Funciona melhor que operadores complexos na API
+    # Ex: "Juiz João da Silva Dano Moral sentença Jusbrasil"
+    query = f'Juiz {nome_juiz} {tema} sentença Jusbrasil'
     
     try:
-        # Usa o contexto do DDGS para buscar
         with DDGS() as ddgs:
-            # Busca 10 resultados
-            ddg_results = list(ddgs.text(query, max_results=10))
+            # region='br-pt' é o segredo para achar coisas locais
+            # timelimit='y' busca coisas do último ano (opcional, tirei para trazer tudo)
+            ddg_results = ddgs.text(query, region='br-pt', max_results=10)
             
             for item in ddg_results:
                 resultados.append({
-                    "titulo": item['title'],
-                    "link": item['href'],
-                    "resumo": item['body']
+                    "titulo": item.get('title', 'Sem título'),
+                    "link": item.get('href', item.get('link', '#')),
+                    "resumo": item.get('body', item.get('snippet', ''))
                 })
         return resultados
     except Exception as e:
-        st.error(f"Erro na busca: {e}")
+        st.error(f"Erro técnico na busca: {e}")
         return []
 
 # --- AGENTES DE INTELIGÊNCIA ---
 
 def agente_peticao_multimodal(relato, imagens, tribunal):
-    """
-    Gera petição lendo TEXTO + IMAGENS (Prints).
-    """
     conteudo = []
-    
     prompt = f"""
-    Você é um Advogado Sênior Especialista.
-    1. Analise o relato e as IMAGENS anexadas (se houver).
-    2. Identifique dados nas imagens (datas, valores, ofensas) e cite em "Dos Fatos".
+    Você é um Advogado Sênior.
+    1. Analise relato e IMAGENS (se houver).
+    2. Identifique dados nas imagens (datas, valores) e cite em "Dos Fatos".
     3. Calcule o valor da causa baseado no teto do {tribunal}.
-    4. Redija a Inicial completa.
+    4. Redija a Inicial.
     5. No fim, coloque [[VALOR_CALCULADO: R$ ...]]
     """
     conteudo.append(prompt)
-    conteudo.append(f"RELATO CLIENTE: {relato}")
+    conteudo.append(f"RELATO: {relato}")
     
-    # Processamento de Imagens
     if imagens:
-        conteudo.append("PROVAS VISUAIS (ANEXOS):")
+        conteudo.append("PROVAS (ANEXOS):")
         for arq in imagens:
             try:
                 img = Image.open(arq)
@@ -85,46 +81,40 @@ def agente_peticao_multimodal(relato, imagens, tribunal):
                     img = img.convert('RGB')
                 img.thumbnail((1024, 1024))
                 conteudo.append(img)
-            except Exception as e:
-                print(f"Erro imagem: {e}")
+            except: pass
                 
     try:
         response = model.generate_content(conteudo, request_options={"timeout": 600})
         return response.text
-    except Exception as e:
-        return f"Erro na IA: {e}"
+    except Exception as e: return f"Erro IA: {e}"
 
 def agente_analise_jurimetria(lista_resultados, nome_juiz, caso_cliente):
-    """
-    Lê os resultados da busca e gera estratégia.
-    """
     texto_links = ""
-    for r in lista_resultados[:6]: 
+    for r in lista_resultados[:5]: 
         texto_links += f"- Título: {r['titulo']}\n  Resumo: {r['resumo']}\n  Link: {r['link']}\n\n"
         
     prompt = f"""
-    ATUE COMO DATA SCIENTIST JURÍDICO.
+    ATUE COMO ESPECIALISTA EM JURIMETRIA.
+    CASO: {caso_cliente}
+    JUIZ: {nome_juiz}
     
-    MEU CASO: {caso_cliente}
-    JUIZ ALVO: {nome_juiz}
-    
-    ENCONTREI ESSES LINKS NA WEB (Jusbrasil/Escavador):
+    DADOS DA WEB (Jusbrasil/TJs):
     {texto_links}
     
-    ANÁLISE NECESSÁRIA:
-    1. Baseado nos títulos/resumos, esse juiz costuma julgar PROCEDENTE esse tipo de tema?
-    2. Tente encontrar um NÚMERO DE PROCESSO no texto dos resumos para usarmos de paradigma.
-    3. Qual a "temperatura" dele? (Rigoroso ou Pró-Consumidor?)
+    TAREFA:
+    1. Baseado nesses resumos, o juiz costuma julgar PROCEDENTE?
+    2. Tente extrair um NÚMERO DE PROCESSO citado nos resumos/títulos.
+    3. Analise a tendência de valor.
     
     SAÍDA (Markdown):
-    ### 📊 Veredito Preliminar
-    (Sua análise sobre a chance de vitória)
+    ### 📊 Veredito
+    (Sua análise)
     
-    ### 🏆 Caso Semelhante Encontrado
-    (Se achou algum processo citado nos resumos, mostre aqui).
+    ### 🏆 Precedente Encontrado
+    (Se houver número de processo, cite aqui).
     
-    ### 🔗 Fontes para Consulta
-    (Liste os links para eu clicar).
+    ### 🔗 Fontes
+    (Liste os links).
     """
     return model.generate_content(prompt).text
 
@@ -132,27 +122,24 @@ def agente_comunicacao(fase, nome):
     return model.generate_content(f"Msg WhatsApp curta para {nome} sobre fase {fase}.").text
 
 # --- INTERFACE ---
-st.title("⚖️ Advogado AI - Sistema Completo")
+st.title("⚖️ Advogado AI - Sistema Final")
 
-menu = st.sidebar.radio("Menu", ["1. Novo Caso (Com Prints)", "2. Carteira CRM", "3. Jurimetria (Web Search)"])
+menu = st.sidebar.radio("Menu", ["1. Novo Caso", "2. Carteira CRM", "3. Jurimetria Web"])
 
-# --- ABA 1: NOVO CASO ---
-if menu == "1. Novo Caso (Com Prints)":
-    st.header("📂 Cadastro & Petição Multimodal")
-    
+# ABA 1
+if menu == "1. Novo Caso":
+    st.header("📂 Cadastro")
     with st.form("form_novo"):
         c1, c2 = st.columns(2)
-        cli = c1.text_input("Nome Cliente")
+        cli = c1.text_input("Cliente")
         tel = c1.text_input("WhatsApp")
         trib = c2.selectbox("Tribunal", ["TJRJ", "TJSP", "TJMG", "Outros"])
-        
-        relato = st.text_area("Fatos do Caso", height=150)
-        arquivos = st.file_uploader("Anexar Provas (Prints/Fotos)", type=["png","jpg","jpeg"], accept_multiple_files=True)
-        
-        btn_gerar = st.form_submit_button("🤖 Analisar Provas e Gerar Inicial")
+        relato = st.text_area("Fatos")
+        arquivos = st.file_uploader("Provas", type=["png","jpg","jpeg"], accept_multiple_files=True)
+        btn_gerar = st.form_submit_button("Gerar Inicial")
 
     if btn_gerar and cli and relato:
-        with st.spinner("Lendo imagens e redigindo..."):
+        with st.spinner("Gerando..."):
             peticao = agente_peticao_multimodal(relato, arquivos, trib)
             valor = "A Calcular"
             match = re.search(r"\[\[VALOR_CALCULADO:\s*(.*?)\]\]", peticao)
@@ -163,19 +150,19 @@ if menu == "1. Novo Caso (Com Prints)":
                 cur = conn.cursor()
                 hist = f"FATOS: {relato} || VALOR: {valor} || DATA: {datetime.now()}"
                 if arquivos: hist += " || [COM IMAGENS]"
-                sql = "INSERT INTO processos (cliente_nome, cliente_telefone, tribunal, status, historico) VALUES (%s,%s,%s,%s,%s)"
-                cur.execute(sql, (cli, tel, trib, "Inicial Pronta", hist))
+                cur.execute("INSERT INTO processos (cliente_nome, cliente_telefone, tribunal, status, historico) VALUES (%s,%s,%s,%s,%s)", 
+                            (cli, tel, trib, "Inicial Pronta", hist))
                 conn.commit()
                 conn.close()
                 st.toast(f"Salvo! Valor: {valor}")
             except Exception as e: st.error(str(e))
             
-            st.markdown(f"### 💰 Valor Sugerido: {valor}")
-            st.download_button("Baixar Inicial (.docx)", peticao, f"{cli}.txt")
+            st.markdown(f"### 💰 Valor: {valor}")
+            st.download_button("Baixar", peticao, f"{cli}.txt")
 
-# --- ABA 2: CRM ---
+# ABA 2
 elif menu == "2. Carteira CRM":
-    st.header("🗂️ Gestão")
+    st.header("🗂️ CRM")
     try:
         conn = get_db_connection()
         df = pd.read_sql("SELECT * FROM processos ORDER BY id DESC", conn)
@@ -183,23 +170,19 @@ elif menu == "2. Carteira CRM":
         if not df.empty:
             sel = st.selectbox("Cliente", df["cliente_nome"])
             dado = df[df["cliente_nome"] == sel].iloc[0]
-            st.write(f"Tribunal: {dado['tribunal']} | Status: {dado['status']}")
-            t1, t2 = st.tabs(["Histórico", "WhatsApp"])
-            with t1: st.write(dado['historico'])
-            with t2:
-                dt = st.date_input("Data Audiência")
-                if st.button("Criar Texto Zap"):
-                    st.code(agente_comunicacao("Audiência", dado['cliente_nome']))
+            st.write(f"Tribunal: {dado['tribunal']}")
+            st.write(dado['historico'])
+            if st.button("Gerar Zap"):
+                st.code(agente_comunicacao("Audiência", dado['cliente_nome']))
     except: pass
 
-# --- ABA 3: JURIMETRIA (DUCKDUCKGO) ---
-elif menu == "3. Jurimetria (Web Search)":
-    st.header("🌎 Investigação Web (Sem Bloqueios)")
-    st.info("Buscando no Jusbrasil/Escavador via DuckDuckGo.")
+# ABA 3 (JURIMETRIA CORRIGIDA)
+elif menu == "3. Jurimetria Web":
+    st.header("🌎 Jurimetria (Busca Brasil)")
     
     try:
         conn = get_db_connection()
-        df = pd.read_sql("SELECT cliente_nome, historico, tribunal FROM processos", conn)
+        df = pd.read_sql("SELECT cliente_nome, historico FROM processos", conn)
         conn.close()
         
         if not df.empty:
@@ -207,40 +190,38 @@ elif menu == "3. Jurimetria (Web Search)":
             sel_cli = c1.selectbox("Cliente", df["cliente_nome"])
             dado = df[df["cliente_nome"] == sel_cli].iloc[0]
             
-            fatos_raw = dado["historico"]
-            if "FATOS:" in fatos_raw:
-                fatos_limpos = fatos_raw.split("FATOS:")[1].split("||")[0]
-            else: fatos_limpos = fatos_raw
+            fatos = dado["historico"]
+            if "FATOS:" in fatos: fatos = fatos.split("FATOS:")[1].split("||")[0]
             
-            st.caption(f"**Caso:** {fatos_limpos[:100]}...")
+            st.caption(f"Caso: {fatos[:100]}...")
             
-            juiz = c2.text_input("Nome do Juiz:")
-            tema = c2.text_input("Tema:", value="Dano Moral")
+            juiz = c2.text_input("Nome do Juiz (Ex: João da Silva):")
+            tema = c2.text_input("Tema (Ex: Dano Moral):", value="Dano Moral")
             
             if st.button("🔍 Pesquisar"):
                 if juiz:
-                    with st.status("Pesquisando...", expanded=True) as s:
-                        # Busca via DuckDuckGo
-                        s.write("Varrendo a web...")
+                    with st.status("Buscando...", expanded=True) as s:
+                        # 1. Busca DDG Região Brasil
                         resultados = buscar_jurisprudencia_ddg(juiz, tema)
                         
                         if resultados:
-                            s.write(f"Encontrados {len(resultados)} links!")
-                            # Mostra tabela simples
-                            df_res = pd.DataFrame(resultados)
-                            st.dataframe(df_res[["titulo", "link"]])
+                            s.write(f"✅ Encontrados {len(resultados)} resultados.")
+                            st.dataframe(pd.DataFrame(resultados)[['titulo', 'link']])
                             
-                            s.write("Gemini está analisando...")
-                            analise = agente_analise_jurimetria(resultados, juiz, fatos_limpos)
-                            
+                            # 2. IA
+                            s.write("Analisando...")
+                            analise = agente_analise_jurimetria(resultados, juiz, fatos)
                             st.markdown("---")
                             st.markdown(analise)
                         else:
-                            st.warning("Nenhum resultado encontrado. Tente simplificar o nome do juiz.")
+                            st.warning("A busca automática não retornou links diretos.")
+                            # LINK DE PLANO B
+                            link_manual = f"https://www.google.com/search?q=sentença+juiz+{juiz.replace(' ', '+')}+{tema.replace(' ', '+')}+jusbrasil"
+                            st.markdown(f"👉 **[Clique aqui para abrir a pesquisa manual no Google]({link_manual})** e veja os resultados você mesmo.")
                             
-                        s.update(label="Pronto!", state="complete")
+                        s.update(label="Fim", state="complete")
                 else:
                     st.warning("Digite o Juiz")
         else:
-            st.warning("Cadastre clientes primeiro.")
+            st.warning("Sem clientes.")
     except Exception as e: st.error(str(e))
