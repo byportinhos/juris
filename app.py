@@ -151,7 +151,9 @@ def agente_comparativo_jurimetria(lista_resultados, nome_alvo, tipo_alvo, meu_ca
     
     TAREFA:
     Compare meu caso com o histórico encontrado.
-    
+
+    OBRIGATORIEDADE:
+    Você não pode deixar de colocar o número dos processos que você está comparando. PRECISAMOS SABER A REAL FONTE DA INFORMAÇÃO. 
     SAÍDA OBRIGATÓRIA (Markdown):
     
     ### 🆚 Análise Comparativa
@@ -270,3 +272,4 @@ elif menu == "3. Jurimetria (Investigação)":
         else:
             st.warning("Sem clientes.")
     except Exception as e: st.error(str(e))
+
