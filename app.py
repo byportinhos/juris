@@ -154,6 +154,7 @@ def agente_comparativo_jurimetria(lista_resultados, nome_alvo, tipo_alvo, meu_ca
 
     OBRIGATORIEDADE:
     Você não pode deixar de colocar o número dos processos que você está comparando. PRECISAMOS SABER A REAL FONTE DA INFORMAÇÃO. 
+    NÃO EMITA RESULTADOS SE O NOME DO JUIZ FOR EXATAMENTE O MESMO DO QUE FOI BUSCADO. 
     SAÍDA OBRIGATÓRIA (Markdown):
     
     ### 🆚 Análise Comparativa
@@ -272,4 +273,5 @@ elif menu == "3. Jurimetria (Investigação)":
         else:
             st.warning("Sem clientes.")
     except Exception as e: st.error(str(e))
+
 
