@@ -43,35 +43,47 @@ URLS_DATAJUD = {
 
 def consultar_api_datajud(tribunal, nome_juiz, termo_busca="Dano Moral"):
     """
-    Busca processos REAIS na API do CNJ usando ElasticSearch.
+    Busca processos REAIS na API do CNJ (Versão Flexível).
     """
     url = URLS_DATAJUD.get(tribunal)
     if not url:
         return "Tribunal não mapeado na API Pública."
 
-    # Query ElasticSearch para buscar nome do juiz E o assunto
+    # TRUQUE: Adiciona * (asterisco) antes e depois para pegar partes do nome
+    # Ex: "Silva" vira "*Silva*" (acha João da Silva, Silva Souza, etc)
+    nome_ajustado = f"*{nome_juiz.strip()}*"
+    
+    # Payload ajustado para ser menos rigoroso
     payload = {
-        "size": 10, # Trazer 10 processos recentes
+        "size": 20, # Traz mais resultados para filtrar depois
         "query": {
             "bool": {
+                "should": [
+                    # Tenta achar o nome no Órgão Julgador (Vara)
+                    {"query_string": {"default_field": "orgaoJulgador.nome", "query": nome_ajustado}},
+                    # OU tenta achar o nome em qualquer lugar do texto
+                    {"query_string": {"query": nome_juiz}}
+                ],
                 "must": [
-                    # Busca textual genérica (pode ser no nome do juiz ou no movimento)
-                    {"query_string": {"query": f'"{nome_juiz}" AND "{termo_busca}"'}}
-                ]
+                    # E TEM que ter o assunto (ex: Dano Moral)
+                    {"match": {"assuntos.nome": termo_busca}}
+                ],
+                "minimum_should_match": 1
             }
         },
-        "sort": [{"dataAjuizamento": "desc"}] # Os mais recentes primeiro
+        "sort": [{"dataAjuizamento": "desc"}]
     }
 
-    # Headers (Se tiver API Key do DataJud nos secrets, usa. Senão, tenta sem.)
+    # Headers Básicos
     headers = {
         "Content-Type": "application/json"
     }
+    # Se tiver chave, usa. Se não, vai sem (alguns endpoints aceitam).
     if "DATAJUD_API_KEY" in st.secrets:
         headers["Authorization"] = f"ApiKey {st.secrets['DATAJUD_API_KEY']}"
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
         if response.status_code == 200:
             dados = response.json()
             hits = dados.get("hits", {}).get("hits", [])
@@ -79,10 +91,15 @@ def consultar_api_datajud(tribunal, nome_juiz, termo_busca="Dano Moral"):
             lista_processos = []
             for hit in hits:
                 source = hit.get("_source", {})
+                
+                # Extração segura dos dados
+                assuntos_lista = [a.get("nome") for a in source.get("assuntos", [])]
+                assuntos_texto = ", ".join(assuntos_lista)
+                
                 proc = {
                     "numero": source.get("numeroProcesso"),
                     "classe": source.get("classe", {}).get("nome"),
-                    "assuntos": [a.get("nome") for a in source.get("assuntos", [])],
+                    "assuntos": assuntos_texto,
                     "data": source.get("dataAjuizamento"),
                     "orgao": source.get("orgaoJulgador", {}).get("nome")
                 }
@@ -90,7 +107,8 @@ def consultar_api_datajud(tribunal, nome_juiz, termo_busca="Dano Moral"):
             
             return lista_processos
         else:
-            return f"Erro na API DataJud: {response.status_code} - {response.text}"
+            # Retorna o erro exato para debugarmos se for autenticação
+            return f"Erro API CNJ: {response.status_code}"
             
     except Exception as e:
         return f"Erro de conexão: {e}"
@@ -283,3 +301,4 @@ elif menu == "3. Jurimetria Real":
         else:
             st.warning("Sem clientes.")
     except Exception as e: st.error(str(e))
+
