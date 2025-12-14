@@ -1,5 +1,6 @@
 streamlit
-requests
-openai
+mysql-connector-python
+google-generativeai
 pandas
 python-docx
+Pillow
