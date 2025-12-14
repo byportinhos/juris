@@ -11,7 +11,7 @@ import requests
 import json
 
 # --- CONFIGURAÇÕES ---
-st.set_page_config(page_title="Advogado AI - Precision", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Advogado AI - Final", layout="wide", page_icon="⚖️")
 
 # 1. Configurar Gemini
 try:
@@ -30,28 +30,23 @@ def get_db_connection():
         database=st.secrets["database"]["DB_NAME"]
     )
 
-# --- FUNÇÃO DE BUSCA SERPER (MODO ESTRITO) ---
+# --- FUNÇÃO DE BUSCA SERPER (COM EXTRAÇÃO DE PROCESSO) ---
 def buscar_google_serper_estrito(nome_alvo, tipo_alvo, tema):
     """
-    Busca exata usando aspas e contexto específico (Juiz ou Advogado).
+    Busca exata e extrai AUTOMATICAMENTE números de processo CNJ via Regex.
     """
     url = "https://google.serper.dev/search"
     
-    # Lógica de Query Especializada
-    # Aspas duplas forçam o Google a achar o nome EXATO.
     if tipo_alvo == "Juiz(a)":
-        # Ex: site:jusbrasil.com.br "Juiz João Silva" "Dano Moral" sentença
         query_texto = f'site:jusbrasil.com.br "{nome_alvo}" "{tema}" sentença'
     else:
-        # Ex: site:jusbrasil.com.br "Advogada Maria Souza" "Dano Moral"
-        # Removemos a palavra 'sentença' obrigatória para achar petições ou diários
         query_texto = f'site:jusbrasil.com.br "{nome_alvo}" "{tema}"'
     
     payload = json.dumps({
         "q": query_texto,
         "gl": "br",
         "hl": "pt-br",
-        "num": 20 # Buscamos mais resultados para poder filtrar os ruins
+        "num": 20
     })
     
     headers = {
@@ -65,15 +60,25 @@ def buscar_google_serper_estrito(nome_alvo, tipo_alvo, tema):
             dados = response.json()
             resultados_filtrados = []
             
-            # FILTRAGEM VIA PYTHON (A "Peneira")
+            # Padrão Regex para Número de Processo (CNJ)
+            # Ex: 0001234-55.2023.8.19.0001
+            padrao_cnj = r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}"
+            
             for item in dados.get("organic", []):
                 titulo = item.get("title", "").lower()
                 snippet = item.get("snippet", "").lower()
                 nome_lower = nome_alvo.lower()
                 
-                # Só aceita se o nome digitado aparecer LITERALMENTE no título ou resumo
+                # Filtro de Nome
                 if nome_lower in titulo or nome_lower in snippet:
+                    
+                    # Tenta extrair o número do processo do título ou do resumo
+                    texto_completo = item.get("title", "") + " " + item.get("snippet", "")
+                    match_proc = re.search(padrao_cnj, texto_completo)
+                    numero_proc = match_proc.group() if match_proc else "Ver no Link"
+                    
                     resultados_filtrados.append({
+                        "processo": numero_proc, # Nova coluna
                         "titulo": item.get("title"),
                         "link": item.get("link"),
                         "resumo": item.get("snippet")
@@ -115,12 +120,12 @@ def agente_peticao_multimodal(relato, imagens, tribunal):
 
 def agente_comparativo_jurimetria(lista_resultados, nome_alvo, tipo_alvo, meu_caso_fatos):
     """
-    Compara a petição do usuário com os resultados exatos encontrados.
+    Compara e EXIGE o número do processo na resposta.
     """
     texto_links = ""
-    # Pega apenas os 5 mais relevantes que passaram no filtro
+    # Pega os 5 primeiros
     for r in lista_resultados[:5]: 
-        texto_links += f"- Título: {r['titulo']}\n  Resumo: {r['resumo']}\n  Link: {r['link']}\n\n"
+        texto_links += f"- PROCESSO: {r['processo']}\n  Título: {r['titulo']}\n  Resumo: {r['resumo']}\n  Link: {r['link']}\n\n"
         
     prompt = f"""
     ATUE COMO ESTRATEGISTA JURÍDICO SÊNIOR.
@@ -128,23 +133,24 @@ def agente_comparativo_jurimetria(lista_resultados, nome_alvo, tipo_alvo, meu_ca
     1. MEU CASO (FATOS):
     "{meu_caso_fatos}"
     
-    2. HISTÓRICO ENCONTRADO DE {nome_alvo} ({tipo_alvo}):
+    2. DADOS ENCONTRADOS DE {nome_alvo} ({tipo_alvo}):
     {texto_links}
     
-    TAREFA DE COMPARAÇÃO:
-    Você está analisando o histórico desse profissional/juiz.
+    TAREFA:
+    Compare meu caso com o histórico encontrado.
     
-    SAÍDA ESPERADA (Markdown):
-    ### 🆚 Comparativo: Meu Caso vs. Histórico
-    *   **Contexto:** O(a) {tipo_alvo} já atuou em casos idênticos?
-    *   **Análise:** Se for Juiz: Ele julga procedente? Se for Advogado: Qual tese ele costuma usar?
+    SAÍDA OBRIGATÓRIA (Markdown):
     
-    ### 🎯 Probabilidade e Estratégia
-    *   **Chance:** (Alta/Média/Baixa).
-    *   **Dica Ouro:** O que fazer diferente dos casos listados?
+    ### 🆚 Análise Comparativa
+    (Como o meu caso se parece com os encontrados?)
     
-    ### 🏆 Melhor Referência
-    (Cite o caso mais parecido da lista acima).
+    ### 🎯 Probabilidade e Risco
+    (Chance de Êxito e Pontos de Atenção).
+    
+    ### 🏆 Referência (Processo Paradigma)
+    *   **Nº do Processo:** (Copie o número do processo listado acima que for mais relevante. Se estiver 'Ver no Link', diga isso).
+    *   **Resumo do Caso:** (O que aconteceu nesse processo).
+    *   **Aplicação:** (Como usar isso a nosso favor).
     """
     return model.generate_content(prompt).text
 
@@ -152,11 +158,11 @@ def agente_comunicacao(fase, nome):
     return model.generate_content(f"Msg WhatsApp curta para {nome} sobre fase {fase}.").text
 
 # --- INTERFACE ---
-st.title("⚖️ Advogado AI - Busca Exata")
+st.title("⚖️ Advogado AI - Sistema Final")
 
 menu = st.sidebar.radio("Menu", ["1. Novo Caso", "2. CRM", "3. Jurimetria (Investigação)"])
 
-# ABA 1 - MANTIDA IGUAL
+# ABA 1
 if menu == "1. Novo Caso":
     st.header("📂 Cadastro")
     with st.form("f1"):
@@ -187,7 +193,7 @@ if menu == "1. Novo Caso":
             st.markdown(f"### 💰 {val}")
             st.download_button("Baixar", res, f"{cli}.txt")
 
-# ABA 2 - MANTIDA IGUAL
+# ABA 2
 elif menu == "2. CRM":
     st.header("🗂️ CRM")
     try:
@@ -201,10 +207,10 @@ elif menu == "2. CRM":
             if st.button("Msg Zap"): st.code(agente_comunicacao("Audiência", sel))
     except: pass
 
-# ABA 3 - JURIMETRIA MELHORADA
+# ABA 3
 elif menu == "3. Jurimetria (Investigação)":
-    st.header("🌎 Comparativo Estratégico (Modo Estrito)")
-    st.info("Agora filtramos resultados para garantir que seja a pessoa exata.")
+    st.header("🌎 Comparativo Estratégico")
+    st.info("Buscando Precedentes com Números de Processo (CNJ).")
     
     try:
         conn = get_db_connection()
@@ -221,31 +227,33 @@ elif menu == "3. Jurimetria (Investigação)":
             
             st.write(f"**Caso:** _{fatos[:100]}..._")
             
-            # NOVOS CAMPOS DE CONTROLE
             col_tipo, col_nome = st.columns([1, 2])
             tipo_alvo = col_tipo.selectbox("Quem investigar?", ["Juiz(a)", "Advogado(a)"])
-            nome_alvo = col_nome.text_input(f"Nome do {tipo_alvo} (Nome Completo ajuda):")
-            tema = st.text_input("Tema (Ex: Dano Moral Telefonia):", value="Dano Moral")
+            nome_alvo = col_nome.text_input(f"Nome do {tipo_alvo}:")
+            tema = st.text_input("Tema:", value="Dano Moral")
             
             if st.button("🔍 Investigar e Comparar"):
                 if nome_alvo:
-                    with st.status("Investigação Profunda...", expanded=True) as s:
-                        s.write(f"1. Buscando ocorrências exatas de '{nome_alvo}'...")
+                    with st.status("Processando...", expanded=True) as s:
+                        s.write(f"1. Buscando ocorrências de '{nome_alvo}'...")
                         
-                        # Busca Filtrada
+                        # Busca e Extração de Número
                         resultados = buscar_google_serper_estrito(nome_alvo, tipo_alvo, tema)
                         
                         if resultados:
-                            s.write(f"✅ Filtramos {len(resultados)} resultados onde a pessoa aparece.")
-                            st.dataframe(pd.DataFrame(resultados)[['titulo', 'link']])
+                            s.write(f"✅ Encontrados {len(resultados)} resultados.")
                             
-                            s.write("2. IA Comparando com sua petição...")
+                            # Mostra Tabela com a nova coluna PROCESSO
+                            df_res = pd.DataFrame(resultados)
+                            st.dataframe(df_res[['processo', 'titulo', 'link']])
+                            
+                            s.write("2. IA Comparando...")
                             analise = agente_comparativo_jurimetria(resultados, nome_alvo, tipo_alvo, fatos)
                             
                             st.markdown("---")
                             st.markdown(analise)
                         else:
-                            st.warning(f"Não encontrei o nome exato '{nome_alvo}' vinculado ao tema '{tema}' no Jusbrasil. Tente tirar abreviações.")
+                            st.warning(f"Não encontrei resultados exatos.")
                         s.update(label="Concluído", state="complete")
                 else:
                     st.warning("Digite o Nome.")
