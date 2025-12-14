@@ -11,7 +11,7 @@ import requests
 import json
 
 # --- CONFIGURAÇÕES ---
-st.set_page_config(page_title="Advogado AI - Pro", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Advogado AI - Precision", layout="wide", page_icon="⚖️")
 
 # 1. Configurar Gemini
 try:
@@ -30,22 +30,28 @@ def get_db_connection():
         database=st.secrets["database"]["DB_NAME"]
     )
 
-# --- FUNÇÃO DE BUSCA PROFISSIONAL (SERPER.DEV) ---
-def buscar_google_serper(nome_juiz, tema):
+# --- FUNÇÃO DE BUSCA SERPER (MODO ESTRITO) ---
+def buscar_google_serper_estrito(nome_alvo, tipo_alvo, tema):
     """
-    Usa a API Serper para fazer buscas no Google sem ser bloqueado.
+    Busca exata usando aspas e contexto específico (Juiz ou Advogado).
     """
     url = "https://google.serper.dev/search"
     
-    # Query focada em achar sentenças no Jusbrasil
-    # Ex: "Sentença Juiz João da Silva Dano Moral site:jusbrasil.com.br"
-    query_texto = f'Sentença Juiz {nome_juiz} "{tema}" site:jusbrasil.com.br'
+    # Lógica de Query Especializada
+    # Aspas duplas forçam o Google a achar o nome EXATO.
+    if tipo_alvo == "Juiz(a)":
+        # Ex: site:jusbrasil.com.br "Juiz João Silva" "Dano Moral" sentença
+        query_texto = f'site:jusbrasil.com.br "{nome_alvo}" "{tema}" sentença'
+    else:
+        # Ex: site:jusbrasil.com.br "Advogada Maria Souza" "Dano Moral"
+        # Removemos a palavra 'sentença' obrigatória para achar petições ou diários
+        query_texto = f'site:jusbrasil.com.br "{nome_alvo}" "{tema}"'
     
     payload = json.dumps({
         "q": query_texto,
-        "gl": "br", # País: Brasil
-        "hl": "pt-br", # Idioma: Português
-        "num": 10 # 10 Resultados
+        "gl": "br",
+        "hl": "pt-br",
+        "num": 20 # Buscamos mais resultados para poder filtrar os ruins
     })
     
     headers = {
@@ -57,16 +63,23 @@ def buscar_google_serper(nome_juiz, tema):
         response = requests.request("POST", url, headers=headers, data=payload)
         if response.status_code == 200:
             dados = response.json()
-            resultados = []
+            resultados_filtrados = []
             
-            # Processa os resultados orgânicos
+            # FILTRAGEM VIA PYTHON (A "Peneira")
             for item in dados.get("organic", []):
-                resultados.append({
-                    "titulo": item.get("title"),
-                    "link": item.get("link"),
-                    "resumo": item.get("snippet") # O resumo que o Google mostra
-                })
-            return resultados
+                titulo = item.get("title", "").lower()
+                snippet = item.get("snippet", "").lower()
+                nome_lower = nome_alvo.lower()
+                
+                # Só aceita se o nome digitado aparecer LITERALMENTE no título ou resumo
+                if nome_lower in titulo or nome_lower in snippet:
+                    resultados_filtrados.append({
+                        "titulo": item.get("title"),
+                        "link": item.get("link"),
+                        "resumo": item.get("snippet")
+                    })
+            
+            return resultados_filtrados
         else:
             st.error(f"Erro Serper: {response.text}")
             return []
@@ -100,37 +113,38 @@ def agente_peticao_multimodal(relato, imagens, tribunal):
         return model.generate_content(conteudo, request_options={"timeout": 600}).text
     except Exception as e: return str(e)
 
-def agente_comparativo_jurimetria(lista_resultados, nome_juiz, meu_caso_fatos):
+def agente_comparativo_jurimetria(lista_resultados, nome_alvo, tipo_alvo, meu_caso_fatos):
     """
-    COMPARA a petição do usuário com os resumos encontrados.
+    Compara a petição do usuário com os resultados exatos encontrados.
     """
     texto_links = ""
+    # Pega apenas os 5 mais relevantes que passaram no filtro
     for r in lista_resultados[:5]: 
-        texto_links += f"- Título: {r['titulo']}\n  Resumo do Google: {r['resumo']}\n  Link: {r['link']}\n\n"
+        texto_links += f"- Título: {r['titulo']}\n  Resumo: {r['resumo']}\n  Link: {r['link']}\n\n"
         
     prompt = f"""
     ATUE COMO ESTRATEGISTA JURÍDICO SÊNIOR.
     
-    1. MEU CASO (FATOS DA MINHA PETIÇÃO):
+    1. MEU CASO (FATOS):
     "{meu_caso_fatos}"
     
-    2. O QUE O JUIZ {nome_juiz} JÁ DECIDIU (BUSCA GOOGLE):
+    2. HISTÓRICO ENCONTRADO DE {nome_alvo} ({tipo_alvo}):
     {texto_links}
     
-    TAREFA DE COMPARAÇÃO (IMPORTANTE):
-    Você deve comparar os fatos do meu caso com os resumos das sentenças encontradas.
+    TAREFA DE COMPARAÇÃO:
+    Você está analisando o histórico desse profissional/juiz.
     
     SAÍDA ESPERADA (Markdown):
-    ### 🆚 Comparativo: Meu Caso vs. Precedentes
-    *   **Similaridade:** Os casos encontrados são parecidos com o meu? (Sim/Não e Porquê).
-    *   **Ponto de Atenção:** O resumo do Google mostra que ele julgou improcedente algum caso parecido? Por qual motivo?
+    ### 🆚 Comparativo: Meu Caso vs. Histórico
+    *   **Contexto:** O(a) {tipo_alvo} já atuou em casos idênticos?
+    *   **Análise:** Se for Juiz: Ele julga procedente? Se for Advogado: Qual tese ele costuma usar?
     
     ### 🎯 Probabilidade e Estratégia
-    *   **Chance de Vitória:** (Alta/Média/Baixa) baseada no histórico acima.
-    *   **Dica:** O que devo adicionar na minha petição para não cair no mesmo erro dos casos improcedentes?
+    *   **Chance:** (Alta/Média/Baixa).
+    *   **Dica Ouro:** O que fazer diferente dos casos listados?
     
-    ### 🏆 Melhor Jurisprudência Encontrada
-    (Copie o Link e o Título do caso mais favorável para eu usar).
+    ### 🏆 Melhor Referência
+    (Cite o caso mais parecido da lista acima).
     """
     return model.generate_content(prompt).text
 
@@ -138,11 +152,11 @@ def agente_comunicacao(fase, nome):
     return model.generate_content(f"Msg WhatsApp curta para {nome} sobre fase {fase}.").text
 
 # --- INTERFACE ---
-st.title("⚖️ Advogado AI - Comparativo Real")
+st.title("⚖️ Advogado AI - Busca Exata")
 
-menu = st.sidebar.radio("Menu", ["1. Novo Caso", "2. CRM", "3. Jurimetria (Google IA)"])
+menu = st.sidebar.radio("Menu", ["1. Novo Caso", "2. CRM", "3. Jurimetria (Investigação)"])
 
-# ABA 1
+# ABA 1 - MANTIDA IGUAL
 if menu == "1. Novo Caso":
     st.header("📂 Cadastro")
     with st.form("f1"):
@@ -173,7 +187,7 @@ if menu == "1. Novo Caso":
             st.markdown(f"### 💰 {val}")
             st.download_button("Baixar", res, f"{cli}.txt")
 
-# ABA 2
+# ABA 2 - MANTIDA IGUAL
 elif menu == "2. CRM":
     st.header("🗂️ CRM")
     try:
@@ -187,10 +201,10 @@ elif menu == "2. CRM":
             if st.button("Msg Zap"): st.code(agente_comunicacao("Audiência", sel))
     except: pass
 
-# ABA 3 (JURIMETRIA SERPER)
-elif menu == "3. Jurimetria (Google IA)":
-    st.header("🌎 Comparativo de Tese (Google Search)")
-    st.info("A IA vai ler os resultados do Jusbrasil e comparar com o seu caso.")
+# ABA 3 - JURIMETRIA MELHORADA
+elif menu == "3. Jurimetria (Investigação)":
+    st.header("🌎 Comparativo Estratégico (Modo Estrito)")
+    st.info("Agora filtramos resultados para garantir que seja a pessoa exata.")
     
     try:
         conn = get_db_connection()
@@ -202,37 +216,39 @@ elif menu == "3. Jurimetria (Google IA)":
             sel_cli = c1.selectbox("Selecione seu Cliente:", df["cliente_nome"])
             dado = df[df["cliente_nome"] == sel_cli].iloc[0]
             
-            # Recupera os fatos da petição salva
             fatos = dado["historico"]
             if "FATOS:" in fatos: fatos = fatos.split("FATOS:")[1].split("||")[0]
             
-            st.write(f"**Analisando Tese do Cliente:** _{fatos[:150]}..._")
+            st.write(f"**Caso:** _{fatos[:100]}..._")
             
-            juiz = c2.text_input("Nome do Juiz (Ex: João da Silva):")
-            tema = c2.text_input("Tema (Ex: Dano Moral):", value="Dano Moral")
+            # NOVOS CAMPOS DE CONTROLE
+            col_tipo, col_nome = st.columns([1, 2])
+            tipo_alvo = col_tipo.selectbox("Quem investigar?", ["Juiz(a)", "Advogado(a)"])
+            nome_alvo = col_nome.text_input(f"Nome do {tipo_alvo} (Nome Completo ajuda):")
+            tema = st.text_input("Tema (Ex: Dano Moral Telefonia):", value="Dano Moral")
             
-            if st.button("🔍 Comparar com Jurisprudência"):
-                if juiz:
-                    with st.status("Processando...", expanded=True) as s:
-                        s.write("1. Buscando sentenças no Google (API Serper)...")
-                        # Busca Garantida (Sem bloqueio)
-                        resultados = buscar_google_serper(juiz, tema)
+            if st.button("🔍 Investigar e Comparar"):
+                if nome_alvo:
+                    with st.status("Investigação Profunda...", expanded=True) as s:
+                        s.write(f"1. Buscando ocorrências exatas de '{nome_alvo}'...")
+                        
+                        # Busca Filtrada
+                        resultados = buscar_google_serper_estrito(nome_alvo, tipo_alvo, tema)
                         
                         if resultados:
-                            s.write(f"✅ Encontrados {len(resultados)} casos relevantes.")
+                            s.write(f"✅ Filtramos {len(resultados)} resultados onde a pessoa aparece.")
                             st.dataframe(pd.DataFrame(resultados)[['titulo', 'link']])
                             
-                            s.write("2. Gemini está lendo e comparando com sua petição...")
-                            analise = agente_comparativo_jurimetria(resultados, juiz, fatos)
+                            s.write("2. IA Comparando com sua petição...")
+                            analise = agente_comparativo_jurimetria(resultados, nome_alvo, tipo_alvo, fatos)
                             
                             st.markdown("---")
                             st.markdown(analise)
                         else:
-                            st.warning("Não encontrei resultados exatos no Jusbrasil.")
+                            st.warning(f"Não encontrei o nome exato '{nome_alvo}' vinculado ao tema '{tema}' no Jusbrasil. Tente tirar abreviações.")
                         s.update(label="Concluído", state="complete")
                 else:
-                    st.warning("Digite o Juiz")
+                    st.warning("Digite o Nome.")
         else:
             st.warning("Sem clientes.")
     except Exception as e: st.error(str(e))
-
