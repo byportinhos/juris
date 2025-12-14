@@ -33,6 +33,7 @@ def get_db_connection():
 def agente_peticao_inicial(relato_texto, imagens_upload):
     """
     Agente que analisa texto e prints (imagens) para criar a petição.
+    Versão Otimizada: Trata imagens e aumenta timeout.
     """
     lista_conteudo = []
     
@@ -44,7 +45,7 @@ def agente_peticao_inicial(relato_texto, imagens_upload):
     ESTRUTURA OBRIGATÓRIA:
     1. Endereçamento (Ao Juízo do JEC da Comarca...)
     2. Qualificação das partes (Deixe campos [PREENCHER] se faltar dados)
-    3. DOS FATOS: Resuma o relato e descreva o que aparece nos prints/provas.
+    3. DOS FATOS: Resuma o relato e descreva O QUE VOCÊ VÊ nos prints/provas (datas, valores, conversas).
     4. DO DIREITO: Cite CDC, Código Civil ou Súmulas.
     5. DOS PEDIDOS: Liquide os pedidos (estime valores de Dano Moral se cabível).
     6. Valor da Causa.
@@ -57,12 +58,32 @@ def agente_peticao_inicial(relato_texto, imagens_upload):
     if imagens_upload:
         lista_conteudo.append("SEGUE ABAIXO AS PROVAS DOCUMENTAIS (PRINTS/FOTOS):")
         for arq in imagens_upload:
-            img = Image.open(arq)
-            lista_conteudo.append(img)
+            try:
+                img = Image.open(arq)
+                
+                # CORREÇÃO 1: Remover transparência (Alpha Channel) que quebra o Gemini às vezes
+                if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+                    img = img.convert('RGB')
+                
+                # CORREÇÃO 2: Reduzir tamanho se for gigante (Economiza banda e evita timeout)
+                # Mantém a proporção, mas limita a 1024x1024 max
+                img.thumbnail((1024, 1024))
+                
+                lista_conteudo.append(img)
+            except Exception as e:
+                st.warning(f"Não foi possível ler uma das imagens: {e}")
             
-    # Gerar conteúdo
-    response = model.generate_content(lista_conteudo)
-    return response.text
+    # CORREÇÃO 3: Adicionar request_options com timeout maior (600 segundos = 10 min)
+    # Petições longas demoram para gerar.
+    try:
+        response = model.generate_content(
+            lista_conteudo, 
+            request_options={"timeout": 600}
+        )
+        return response.text
+    except Exception as e:
+        # Se der erro, retorna a mensagem para a gente ver na tela
+        return f"ERRO NA GERAÇÃO DA IA: {str(e)}"
 
 def agente_jurimetria(nome_juiz, tribunal):
     """
@@ -231,3 +252,4 @@ elif menu == "3. Análise de Juízes (Jurimetria)":
                 st.markdown(analise)
         else:
             st.warning("Digite o nome do juiz.")
+
