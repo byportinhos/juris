@@ -14,7 +14,7 @@ st.set_page_config(page_title="Sistema JEC AI (Gemini)", layout="wide", page_ico
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     # CORREÇÃO: O modelo atual estável é o 1.5-flash
-    model = genai.GenerativeModel('gemini-1.2-pro') 
+    model = genai.GenerativeModel('gemini-2.5-pro') 
 except Exception as e:
     st.error("Erro na API Key do Google. Configure os Secrets.")
     st.stop()
@@ -204,3 +204,42 @@ elif menu == "2. Gestão de Processos (CRM)":
             
             with tab1:
                 st.write("Após protocolar no site do TJ, atualize aqui:")
+                novo_num = st.text_input("Número do Processo (CNJ)")
+                if st.button("Salvar Número CNJ"):
+                    st.success(f"Processo {novo_num} vinculado!")
+                    # Aqui você pode adicionar um UPDATE SQL no futuro
+            
+            with tab2:
+                st.write("Prepare o cliente para a audiência.")
+                data_aud = st.date_input("Data da Audiência")
+                if st.button("Gerar Mensagem WhatsApp"):
+                    msg = agente_comunicacao("Marcação de Audiência", dados["cliente_nome"], str(data_aud))
+                    st.code(msg, language="text")
+                
+                st.info("Verificação de Remarcação: Automática (Simulada).")
+
+            with tab3:
+                st.write("Histórico do Caso:")
+                st.text(dados["historico"])
+
+        else:
+            st.warning("Nenhum processo cadastrado ainda. Vá na aba 'Novo Caso'.")
+            
+    except Exception as e:
+        st.error(f"Erro ao conectar no banco de dados: {e}")
+
+# --- TELA 3: JURIMETRIA (A PARTE QUE TINHA SUMIDO) ---
+elif menu == "3. Análise de Juízes (Jurimetria)":
+    st.header("👨‍⚖️ Investigador de Juízes")
+    
+    col1, col2 = st.columns(2)
+    juiz = col1.text_input("Nome do Magistrado")
+    comarca = col2.text_input("Comarca/Vara")
+    
+    if st.button("Analisar Perfil com IA"):
+        if juiz:
+            with st.spinner(f"Investigando {juiz}..."):
+                analise = agente_jurimetria(juiz, comarca)
+                st.markdown(analise)
+        else:
+            st.warning("Digite o nome do juiz.")
