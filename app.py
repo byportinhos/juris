@@ -8,13 +8,12 @@ from io import BytesIO
 from PIL import Image
 
 # --- CONFIGURAÇÕES INICIAIS ---
-st.set_page_config(page_title="Sistema JEC AI (Gemini)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Sistema JEC AI - Jurimetria Avançada", layout="wide", page_icon="⚖️")
 
 # 1. Configurar Google Gemini
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    # CORREÇÃO: O modelo atual estável é o 1.5-flash
-    model = genai.GenerativeModel('gemini-2.5-flash') 
+    model = genai.GenerativeModel('gemini-1.5-flash') 
 except Exception as e:
     st.error("Erro na API Key do Google. Configure os Secrets.")
     st.stop()
@@ -31,216 +30,191 @@ def get_db_connection():
 # --- FUNÇÕES DE INTELIGÊNCIA ARTIFICIAL (AGENTES) ---
 
 def agente_peticao_inicial(relato_texto, imagens_upload):
-    """
-    Agente que analisa texto e prints (imagens) para criar a petição.
-    """
     lista_conteudo = []
-    
-    # Prompt do Especialista JEC
     prompt_sistema = """
-    Você é um Advogado Especialista em Juizados Especiais Cíveis (Lei 9.099/95).
-    TAREFA: Analisar as provas e redigir uma Petição Inicial completa.
-    
-    ESTRUTURA OBRIGATÓRIA:
-    1. Endereçamento (Ao Juízo do JEC da Comarca...)
-    2. Qualificação das partes (Deixe campos [PREENCHER] se faltar dados)
-    3. DOS FATOS: Resuma o relato e descreva O QUE VOCÊ VÊ nos prints/provas (datas, valores, conversas).
-    4. DO DIREITO: Cite CDC, Código Civil ou Súmulas.
-    5. DOS PEDIDOS: Liquide os pedidos (estime valores de Dano Moral se cabível).
-    6. Valor da Causa.
+    Você é um Advogado Especialista em JEC. Analise as provas e redija a Inicial.
+    ESTRUTURA: Endereçamento, Qualificação, DOS FATOS (Descreva o que vê nos prints), DO DIREITO, PEDIDOS (Com valores), Valor da Causa.
     """
-    
     lista_conteudo.append(prompt_sistema)
-    lista_conteudo.append(f"RELATO DO CLIENTE: {relato_texto}")
+    lista_conteudo.append(f"RELATO: {relato_texto}")
     
-    # Adicionar imagens (prints) para o Gemini analisar
     if imagens_upload:
-        lista_conteudo.append("SEGUE ABAIXO AS PROVAS DOCUMENTAIS (PRINTS/FOTOS):")
+        lista_conteudo.append("PROVAS (PRINTS):")
         for arq in imagens_upload:
             try:
                 img = Image.open(arq)
-                # Remover transparência e reduzir tamanho
                 if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
                     img = img.convert('RGB')
                 img.thumbnail((1024, 1024))
                 lista_conteudo.append(img)
-            except Exception as e:
-                st.warning(f"Não foi possível ler uma das imagens: {e}")
+            except: pass
             
     try:
-        response = model.generate_content(
-            lista_conteudo, 
-            request_options={"timeout": 600}
-        )
+        response = model.generate_content(lista_conteudo, request_options={"timeout": 600})
         return response.text
     except Exception as e:
-        return f"ERRO NA GERAÇÃO DA IA: {str(e)}"
+        return f"Erro IA: {str(e)}"
 
-def agente_jurimetria(nome_juiz, tribunal):
+def agente_jurimetria_casada(nome_juiz, tribunal, fatos_cliente, valor_pedido):
     """
-    Simula a análise do perfil do juiz.
+    Jurimetria Avançada: Cruza o perfil do juiz COM o caso específico do cliente.
     """
     prompt = f"""
-    Atue como um analista de Jurimetria.
-    Juiz: {nome_juiz} ({tribunal}).
+    Atue como um Especialista em Jurimetria e Estratégia Processual.
     
-    Baseado em padrões comuns de julgamento, crie um perfil (simulado para MVP):
-    1. É "Juiz de Lei" (Legalista) ou "Juiz de Equidade" (Mais flexível)?
-    2. Rigor com Dano Moral (Mero aborrecimento vs Dano in re ipsa).
-    3. Dica estratégica para audiência com ele.
+    DADOS DA ANÁLISE:
+    1. MAGISTRADO: {nome_juiz} ({tribunal})
+    2. CASO DO CLIENTE: {fatos_cliente}
+    3. VALOR PEDIDO NA INICIAL: R$ {valor_pedido}
+    
+    TAREFA: Simule uma análise preditiva cruzando o perfil deste juiz com este tipo específico de caso.
+    
+    SAÍDA ESPERADA (Seja realista e duro, use formatação Markdown):
+    
+    ### 🎯 Probabilidade de Êxito
+    [Dê uma porcentagem estimada e explique o porquê baseada no perfil do juiz para esse tema]
+    
+    ### ⚖️ Régua de Valores (Quantum Indenizatório)
+    *   **Média deste Juiz para casos similares:** R$ [Valor]
+    *   **Teto Máximo já visto:** R$ [Valor]
+    *   **Risco:** [Existe risco de improcedência ou mero aborrecimento?]
+    
+    ### 🆚 Comparativo: Sua Petição vs. Cabeça do Juiz
+    *   **Ponto Forte do seu caso para este juiz:** [O que vai convencer ELE?]
+    *   **Ponto Fraco:** [O que ele costuma indeferir?]
+    
+    ### 💡 Recomendação Estratégica
+    [Dica prática para a audiência ou para a réplica]
     """
-    response = model.generate_content(prompt)
-    return response.text
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Erro na análise jurimétrica: {e}"
 
 def agente_comunicacao(fase, nome_cliente, dados_audiencia=None):
-    """
-    Cria mensagens de WhatsApp para o cliente.
-    """
-    prompt = f"""
-    Crie uma mensagem curta e empática para WhatsApp.
-    Destinatário: Cliente {nome_cliente}.
-    Contexto: O processo mudou para a fase '{fase}'.
-    {f"Dados da Audiência: {dados_audiencia}" if dados_audiencia else ""}
-    
-    Oriente o cliente sobre o próximo passo de forma simples.
-    """
+    prompt = f"Crie msg WhatsApp para cliente {nome_cliente}. Fase: {fase}. {f'Audiência: {dados_audiencia}' if dados_audiencia else ''}. Seja breve."
     response = model.generate_content(prompt)
     return response.text
 
-# --- INTERFACE DO SISTEMA ---
+# --- INTERFACE ---
+st.title("⚖️ Sistema SaaS JEC & IA")
 
-st.title("⚖️ Sistema SaaS JEC & IA (Powered by Gemini)")
+menu = st.sidebar.radio("Navegação", ["1. Novo Caso", "2. CRM", "3. Jurimetria Preditiva"])
 
-menu = st.sidebar.radio("Navegação", [
-    "1. Novo Caso (Pré-Processual)", 
-    "2. Gestão de Processos (CRM)", 
-    "3. Análise de Juízes (Jurimetria)"
-])
-
-# --- TELA 1: CADASTRO E PETIÇÃO ---
-if menu == "1. Novo Caso (Pré-Processual)":
-    st.header("📂 Cadastro de Cliente e Geração de Inicial")
-    st.info("O Gemini analisará o relato e os prints (provas) para montar a peça.")
-    
+# --- ABA 1: NOVO CASO ---
+if menu == "1. Novo Caso":
+    st.header("📂 Cadastro e Inicial")
     with st.form("form_inicial"):
         col1, col2 = st.columns(2)
-        with col1:
-            cliente = st.text_input("Nome do Cliente")
-            telefone = st.text_input("WhatsApp")
-        with col2:
-            tribunal = st.selectbox("Tribunal", ["TJRJ", "TJSP", "TJMG", "Outros"])
-            valor_causa = st.number_input("Valor Estimado da Causa (R$)", min_value=0.0)
-            
-        relato = st.text_area("Relato dos Fatos", height=150)
-        provas = st.file_uploader("Provas (Prints/Fotos)", 
-                                  type=["png", "jpg", "jpeg"], 
-                                  accept_multiple_files=True)
-        
-        btn_gerar = st.form_submit_button("🤖 Analisar Provas e Escrever Petição")
+        cliente = col1.text_input("Cliente")
+        telefone = col1.text_input("WhatsApp")
+        tribunal = col2.selectbox("Tribunal", ["TJRJ", "TJSP", "TJMG", "Outros"])
+        valor_causa = col2.number_input("Valor da Causa (R$)", min_value=0.0)
+        relato = st.text_area("Fatos", height=150)
+        provas = st.file_uploader("Provas", type=["png","jpg"], accept_multiple_files=True)
+        btn_gerar = st.form_submit_button("🤖 Gerar Inicial")
 
-    # Lógica FORA do form para evitar erro do botão download
     if btn_gerar and cliente and relato:
-        with st.spinner("Gemini Vision está lendo os prints e escrevendo a petição..."):
-            # A. Chamar IA
-            peticao_texto = agente_peticao_inicial(relato, provas)
+        with st.spinner("IA Trabalhando..."):
+            peticao = agente_peticao_inicial(relato, provas)
             
-            # B. Salvar no MySQL Hostgator
+            # ATENÇÃO: Salvamos o RELATO no histórico para usar na Jurimetria depois
             try:
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                sql = """INSERT INTO processos 
-                            (cliente_nome, cliente_telefone, tribunal, status, historico) 
-                            VALUES (%s, %s, %s, %s, %s)"""
-                historico_inicial = f"{datetime.now()}: Petição gerada via IA."
-                cursor.execute(sql, (cliente, telefone, tribunal, "Petição Pronta", historico_inicial))
+                # Concatenamos o relato no histórico para recuperar fácil depois
+                historico_rico = f"RELATO_FATOS: {relato} || DATA: {datetime.now()}"
+                sql = "INSERT INTO processos (cliente_nome, cliente_telefone, tribunal, status, historico) VALUES (%s, %s, %s, %s, %s)"
+                cursor.execute(sql, (cliente, telefone, tribunal, "Inicial Pronta", historico_rico))
                 conn.commit()
                 conn.close()
-                st.toast("Processo Salvo no Banco de Dados!", icon="💾")
+                st.toast("Salvo!", icon="✅")
             except Exception as e:
-                st.error(f"Erro ao salvar no banco: {e}")
+                st.error(f"Erro DB: {e}")
             
-            # C. Exibir Resultado
-            st.subheader("Minuta Gerada")
-            st.text_area("Copie o texto:", value=peticao_texto, height=400)
+            st.text_area("Petição", value=peticao, height=400)
             
-            # D. Botão Download
             doc = Document()
-            doc.add_heading(f'Petição Inicial - {cliente}', 0)
-            doc.add_paragraph(peticao_texto)
+            doc.add_paragraph(peticao)
             buffer = BytesIO()
             doc.save(buffer)
             buffer.seek(0)
-            
-            st.download_button(
-                label="📥 Baixar .DOCX", 
-                data=buffer, 
-                file_name=f"Inicial_{cliente}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
+            st.download_button("Baixar Docx", data=buffer, file_name=f"{cliente}.docx")
 
-# --- TELA 2: CRM (A PARTE QUE TINHA SUMIDO) ---
-elif menu == "2. Gestão de Processos (CRM)":
-    st.header("🗂️ Carteira de Clientes")
-    
+# --- ABA 2: CRM ---
+elif menu == "2. CRM":
+    st.header("🗂️ Gestão")
     try:
         conn = get_db_connection()
-        # Lê a tabela do banco
         df = pd.read_sql("SELECT * FROM processos ORDER BY id DESC", conn)
         conn.close()
         
         if len(df) > 0:
-            proc_selecionado = st.selectbox("Selecione o Cliente:", df["cliente_nome"])
-            dados = df[df["cliente_nome"] == proc_selecionado].iloc[0]
+            selecao = st.selectbox("Cliente", df["cliente_nome"])
+            dados = df[df["cliente_nome"] == selecao].iloc[0]
+            st.write(f"**Status:** {dados['status']} | **Tribunal:** {dados['tribunal']}")
             
-            st.markdown("---")
-            colA, colB, colC = st.columns(3)
-            colA.metric("Status", dados["status"])
-            colB.metric("Tribunal", dados["tribunal"])
-            colC.metric("Telefone", dados["cliente_telefone"])
-            
-            st.subheader("⚙️ Painel de Ações")
-            
-            tab1, tab2, tab3 = st.tabs(["Registro TJ", "Audiência", "Julgamento"])
-            
+            tab1, tab2 = st.tabs(["Audiência", "Comunicação"])
             with tab1:
-                st.write("Após protocolar no site do TJ, atualize aqui:")
-                novo_num = st.text_input("Número do Processo (CNJ)")
-                if st.button("Salvar Número CNJ"):
-                    st.success(f"Processo {novo_num} vinculado!")
-                    # Aqui você pode adicionar um UPDATE SQL no futuro
-            
+                data = st.date_input("Data Audiência")
+                if st.button("Gerar Aviso"):
+                    st.code(agente_comunicacao("Audiência Marcada", dados["cliente_nome"], str(data)))
             with tab2:
-                st.write("Prepare o cliente para a audiência.")
-                data_aud = st.date_input("Data da Audiência")
-                if st.button("Gerar Mensagem WhatsApp"):
-                    msg = agente_comunicacao("Marcação de Audiência", dados["cliente_nome"], str(data_aud))
-                    st.code(msg, language="text")
-                
-                st.info("Verificação de Remarcação: Automática (Simulada).")
-
-            with tab3:
-                st.write("Histórico do Caso:")
                 st.text(dados["historico"])
+    except: st.error("Erro conexão DB")
 
+# --- ABA 3: JURIMETRIA AVANÇADA (NOVA LÓGICA) ---
+elif menu == "3. Jurimetria Preditiva":
+    st.header("🎯 Análise de Viabilidade por Juiz")
+    st.info("Cruza o perfil do Juiz com os Fatos reais do seu cliente.")
+    
+    try:
+        # 1. Puxar Clientes do Banco para não precisar redigitar os fatos
+        conn = get_db_connection()
+        df_clientes = pd.read_sql("SELECT cliente_nome, historico, tribunal FROM processos", conn)
+        conn.close()
+        
+        if len(df_clientes) > 0:
+            col_sel, col_juiz = st.columns(2)
+            
+            # Seleciona o caso que já existe
+            cliente_sel = col_sel.selectbox("Selecione o Caso/Cliente:", df_clientes["cliente_nome"])
+            
+            # Pega os dados desse cliente automaticamente
+            dados_caso = df_clientes[df_clientes["cliente_nome"] == cliente_sel].iloc[0]
+            tribunal_auto = dados_caso["tribunal"]
+            
+            # Tenta extrair o relato do histórico (gambiarra inteligente)
+            historico_texto = dados_caso["historico"]
+            # Se salvamos como "RELATO_FATOS: ... ||", tentamos limpar
+            if "RELATO_FATOS:" in historico_texto:
+                fatos_auto = historico_texto.split("RELATO_FATOS:")[1].split("||")[0]
+            else:
+                fatos_auto = historico_texto # Usa tudo se não achar a tag
+            
+            # Mostra o resumo para o advogado conferir
+            st.caption(f"**Caso Carregado:** {fatos_auto[:150]}...")
+            
+            # Inputs da Jurimetria
+            juiz_nome = col_juiz.text_input("Nome do Juiz(a) que vai julgar:")
+            valor_meta = col_juiz.number_input("Quanto queremos ganhar? (R$)", value=5000.0)
+            
+            if st.button("🔍 Cruzar Dados e Analisar Veredito"):
+                if juiz_nome:
+                    with st.spinner(f"Simulando julgamento do Dr(a). {juiz_nome} para este caso..."):
+                        analise = agente_jurimetria_casada(
+                            nome_juiz=juiz_nome, 
+                            tribunal=tribunal_auto, 
+                            fatos_cliente=fatos_auto, 
+                            valor_pedido=valor_meta
+                        )
+                        st.markdown("---")
+                        st.markdown(analise)
+                else:
+                    st.warning("Digite o nome do Juiz.")
         else:
-            st.warning("Nenhum processo cadastrado ainda. Vá na aba 'Novo Caso'.")
+            st.warning("Cadastre um cliente na Aba 1 primeiro.")
             
     except Exception as e:
-        st.error(f"Erro ao conectar no banco de dados: {e}")
-
-# --- TELA 3: JURIMETRIA (A PARTE QUE TINHA SUMIDO) ---
-elif menu == "3. Análise de Juízes (Jurimetria)":
-    st.header("👨‍⚖️ Investigador de Juízes")
-    
-    col1, col2 = st.columns(2)
-    juiz = col1.text_input("Nome do Magistrado")
-    comarca = col2.text_input("Comarca/Vara")
-    
-    if st.button("Analisar Perfil com IA"):
-        if juiz:
-            with st.spinner(f"Investigando {juiz}..."):
-                analise = agente_jurimetria(juiz, comarca)
-                st.markdown(analise)
-        else:
-            st.warning("Digite o nome do juiz.")
-
+        st.error(f"Erro ao buscar dados: {e}")
