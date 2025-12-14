@@ -13,8 +13,8 @@ st.set_page_config(page_title="Sistema JEC AI (Gemini)", layout="wide", page_ico
 # 1. Configurar Google Gemini
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    # Usando o Flash que é rápido e multimodal
-    model = genai.GenerativeModel('gemini-2.5-flash') 
+    # CORREÇÃO: O modelo atual estável é o 1.5-flash
+    model = genai.GenerativeModel('gemini-1.2-pro') 
 except Exception as e:
     st.error("Erro na API Key do Google. Configure os Secrets.")
     st.stop()
@@ -33,7 +33,6 @@ def get_db_connection():
 def agente_peticao_inicial(relato_texto, imagens_upload):
     """
     Agente que analisa texto e prints (imagens) para criar a petição.
-    Versão Otimizada: Trata imagens e aumenta timeout.
     """
     lista_conteudo = []
     
@@ -60,21 +59,14 @@ def agente_peticao_inicial(relato_texto, imagens_upload):
         for arq in imagens_upload:
             try:
                 img = Image.open(arq)
-                
-                # CORREÇÃO 1: Remover transparência (Alpha Channel) que quebra o Gemini às vezes
+                # Remover transparência e reduzir tamanho
                 if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
                     img = img.convert('RGB')
-                
-                # CORREÇÃO 2: Reduzir tamanho se for gigante (Economiza banda e evita timeout)
-                # Mantém a proporção, mas limita a 1024x1024 max
                 img.thumbnail((1024, 1024))
-                
                 lista_conteudo.append(img)
             except Exception as e:
                 st.warning(f"Não foi possível ler uma das imagens: {e}")
             
-    # CORREÇÃO 3: Adicionar request_options com timeout maior (600 segundos = 10 min)
-    # Petições longas demoram para gerar.
     try:
         response = model.generate_content(
             lista_conteudo, 
@@ -82,7 +74,6 @@ def agente_peticao_inicial(relato_texto, imagens_upload):
         )
         return response.text
     except Exception as e:
-        # Se der erro, retorna a mensagem para a gente ver na tela
         return f"ERRO NA GERAÇÃO DA IA: {str(e)}"
 
 def agente_jurimetria(nome_juiz, tribunal):
@@ -120,7 +111,6 @@ def agente_comunicacao(fase, nome_cliente, dados_audiencia=None):
 
 st.title("⚖️ Sistema SaaS JEC & IA (Powered by Gemini)")
 
-# Menu Lateral (CRM e Fluxo)
 menu = st.sidebar.radio("Navegação", [
     "1. Novo Caso (Pré-Processual)", 
     "2. Gestão de Processos (CRM)", 
@@ -132,7 +122,6 @@ if menu == "1. Novo Caso (Pré-Processual)":
     st.header("📂 Cadastro de Cliente e Geração de Inicial")
     st.info("O Gemini analisará o relato e os prints (provas) para montar a peça.")
     
-    # 1. O Formulário coleta os dados
     with st.form("form_inicial"):
         col1, col2 = st.columns(2)
         with col1:
@@ -147,10 +136,9 @@ if menu == "1. Novo Caso (Pré-Processual)":
                                   type=["png", "jpg", "jpeg"], 
                                   accept_multiple_files=True)
         
-        # O botão de envio fica DENTRO do form
         btn_gerar = st.form_submit_button("🤖 Analisar Provas e Escrever Petição")
 
-    # 2. A Lógica acontece FORA do form (Note a indentação para a esquerda)
+    # Lógica FORA do form para evitar erro do botão download
     if btn_gerar and cliente and relato:
         with st.spinner("Gemini Vision está lendo os prints e escrevendo a petição..."):
             # A. Chamar IA
@@ -175,7 +163,7 @@ if menu == "1. Novo Caso (Pré-Processual)":
             st.subheader("Minuta Gerada")
             st.text_area("Copie o texto:", value=peticao_texto, height=400)
             
-            # D. Botão Download (Agora funciona pois está fora do form)
+            # D. Botão Download
             doc = Document()
             doc.add_heading(f'Petição Inicial - {cliente}', 0)
             doc.add_paragraph(peticao_texto)
@@ -189,3 +177,30 @@ if menu == "1. Novo Caso (Pré-Processual)":
                 file_name=f"Inicial_{cliente}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
+
+# --- TELA 2: CRM (A PARTE QUE TINHA SUMIDO) ---
+elif menu == "2. Gestão de Processos (CRM)":
+    st.header("🗂️ Carteira de Clientes")
+    
+    try:
+        conn = get_db_connection()
+        # Lê a tabela do banco
+        df = pd.read_sql("SELECT * FROM processos ORDER BY id DESC", conn)
+        conn.close()
+        
+        if len(df) > 0:
+            proc_selecionado = st.selectbox("Selecione o Cliente:", df["cliente_nome"])
+            dados = df[df["cliente_nome"] == proc_selecionado].iloc[0]
+            
+            st.markdown("---")
+            colA, colB, colC = st.columns(3)
+            colA.metric("Status", dados["status"])
+            colB.metric("Tribunal", dados["tribunal"])
+            colC.metric("Telefone", dados["cliente_telefone"])
+            
+            st.subheader("⚙️ Painel de Ações")
+            
+            tab1, tab2, tab3 = st.tabs(["Registro TJ", "Audiência", "Julgamento"])
+            
+            with tab1:
+                st.write("Após protocolar no site do TJ, atualize aqui:")
