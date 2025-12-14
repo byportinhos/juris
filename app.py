@@ -16,7 +16,7 @@ st.set_page_config(page_title="Advogado AI - Pro", layout="wide", page_icon="⚖
 # 1. Configurar Gemini
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    model = genai.GenerativeModel('gemini-1.5-flash') 
+    model = genai.GenerativeModel('gemini-2.5-flash') 
 except:
     st.error("ERRO: Configure a GOOGLE_API_KEY nos Secrets.")
     st.stop()
@@ -235,3 +235,4 @@ elif menu == "3. Jurimetria (Google IA)":
         else:
             st.warning("Sem clientes.")
     except Exception as e: st.error(str(e))
+
