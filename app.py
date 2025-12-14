@@ -9,6 +9,7 @@ from PIL import Image
 import re
 import requests
 import json
+import time # Importante para esperar o erro passar
 
 # --- CONFIGURAÇÕES ---
 st.set_page_config(page_title="Advogado AI - Final", layout="wide", page_icon="⚖️")
@@ -16,6 +17,7 @@ st.set_page_config(page_title="Advogado AI - Final", layout="wide", page_icon="�
 # 1. Configurar Gemini
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    # CORREÇÃO: Usar o modelo 1.5-flash que é o estável e gratuito
     model = genai.GenerativeModel('gemini-2.5-flash') 
 except:
     st.error("ERRO: Configure a GOOGLE_API_KEY nos Secrets.")
@@ -30,11 +32,31 @@ def get_db_connection():
         database=st.secrets["database"]["DB_NAME"]
     )
 
-# --- FUNÇÃO DE BUSCA SERPER (COM EXTRAÇÃO DE PROCESSO) ---
+# --- FUNÇÃO AUXILIAR: RETRY (EVITA ERRO 429) ---
+def gerar_conteudo_seguro(conteudo_prompt):
+    """
+    Tenta gerar conteúdo. Se der erro de cota (429), espera 5 segundos e tenta de novo.
+    """
+    tentativas = 3
+    for i in range(tentativas):
+        try:
+            # Timeout de 10 minutos para petições longas
+            response = model.generate_content(conteudo_prompt, request_options={"timeout": 600})
+            return response.text
+        except Exception as e:
+            erro_str = str(e)
+            if "429" in erro_str or "Quota exceeded" in erro_str:
+                if i < tentativas - 1: # Se não for a última tentativa
+                    st.toast(f"⏳ Alto tráfego na IA. Aguardando 5s para tentar novamente... ({i+1}/{tentativas})", icon="⚠️")
+                    time.sleep(5) # Espera 5 segundos
+                    continue
+                else:
+                    return "Erro: O limite da IA foi atingido. Aguarde 1 minuto e tente novamente."
+            else:
+                return f"Erro na IA: {erro_str}"
+
+# --- FUNÇÃO DE BUSCA SERPER ---
 def buscar_google_serper_estrito(nome_alvo, tipo_alvo, tema):
-    """
-    Busca exata e extrai AUTOMATICAMENTE números de processo CNJ via Regex.
-    """
     url = "https://google.serper.dev/search"
     
     if tipo_alvo == "Juiz(a)":
@@ -60,8 +82,7 @@ def buscar_google_serper_estrito(nome_alvo, tipo_alvo, tema):
             dados = response.json()
             resultados_filtrados = []
             
-            # Padrão Regex para Número de Processo (CNJ)
-            # Ex: 0001234-55.2023.8.19.0001
+            # Regex para Número de Processo CNJ
             padrao_cnj = r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}"
             
             for item in dados.get("organic", []):
@@ -69,21 +90,17 @@ def buscar_google_serper_estrito(nome_alvo, tipo_alvo, tema):
                 snippet = item.get("snippet", "").lower()
                 nome_lower = nome_alvo.lower()
                 
-                # Filtro de Nome
                 if nome_lower in titulo or nome_lower in snippet:
-                    
-                    # Tenta extrair o número do processo do título ou do resumo
                     texto_completo = item.get("title", "") + " " + item.get("snippet", "")
                     match_proc = re.search(padrao_cnj, texto_completo)
                     numero_proc = match_proc.group() if match_proc else "Ver no Link"
                     
                     resultados_filtrados.append({
-                        "processo": numero_proc, # Nova coluna
+                        "processo": numero_proc,
                         "titulo": item.get("title"),
                         "link": item.get("link"),
                         "resumo": item.get("snippet")
                     })
-            
             return resultados_filtrados
         else:
             st.error(f"Erro Serper: {response.text}")
@@ -114,16 +131,12 @@ def agente_peticao_multimodal(relato, imagens, tribunal):
                 img.thumbnail((1024, 1024))
                 conteudo.append(img)
             except: pass
-    try:
-        return model.generate_content(conteudo, request_options={"timeout": 600}).text
-    except Exception as e: return str(e)
+            
+    # Usa a função segura com retry
+    return gerar_conteudo_seguro(conteudo)
 
 def agente_comparativo_jurimetria(lista_resultados, nome_alvo, tipo_alvo, meu_caso_fatos):
-    """
-    Compara e EXIGE o número do processo na resposta.
-    """
     texto_links = ""
-    # Pega os 5 primeiros
     for r in lista_resultados[:5]: 
         texto_links += f"- PROCESSO: {r['processo']}\n  Título: {r['titulo']}\n  Resumo: {r['resumo']}\n  Link: {r['link']}\n\n"
         
@@ -148,14 +161,14 @@ def agente_comparativo_jurimetria(lista_resultados, nome_alvo, tipo_alvo, meu_ca
     (Chance de Êxito e Pontos de Atenção).
     
     ### 🏆 Referência (Processo Paradigma)
-    *   **Nº do Processo:** (Copie o número do processo listado acima que for mais relevante. Se estiver 'Ver no Link', diga isso).
-    *   **Resumo do Caso:** (O que aconteceu nesse processo).
+    *   **Nº do Processo:** (Cite o número do processo listado acima. Se estiver 'Ver no Link', diga isso).
+    *   **Resumo:** (O que aconteceu nesse processo).
     *   **Aplicação:** (Como usar isso a nosso favor).
     """
-    return model.generate_content(prompt).text
+    return gerar_conteudo_seguro(prompt)
 
 def agente_comunicacao(fase, nome):
-    return model.generate_content(f"Msg WhatsApp curta para {nome} sobre fase {fase}.").text
+    return gerar_conteudo_seguro(f"Msg WhatsApp curta para {nome} sobre fase {fase}.")
 
 # --- INTERFACE ---
 st.title("⚖️ Advogado AI - Sistema Final")
@@ -237,13 +250,10 @@ elif menu == "3. Jurimetria (Investigação)":
                     with st.status("Processando...", expanded=True) as s:
                         s.write(f"1. Buscando ocorrências de '{nome_alvo}'...")
                         
-                        # Busca e Extração de Número
                         resultados = buscar_google_serper_estrito(nome_alvo, tipo_alvo, tema)
                         
                         if resultados:
                             s.write(f"✅ Encontrados {len(resultados)} resultados.")
-                            
-                            # Mostra Tabela com a nova coluna PROCESSO
                             df_res = pd.DataFrame(resultados)
                             st.dataframe(df_res[['processo', 'titulo', 'link']])
                             
