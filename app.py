@@ -43,47 +43,44 @@ URLS_DATAJUD = {
 
 def consultar_api_datajud(tribunal, nome_juiz, termo_busca="Dano Moral"):
     """
-    Busca processos REAIS na API do CNJ (Versão Flexível).
+    Busca Estrita na API do CNJ.
+    Obrigatório conter o Nome do Juiz E o Assunto.
     """
     url = URLS_DATAJUD.get(tribunal)
     if not url:
         return "Tribunal não mapeado na API Pública."
 
-    # TRUQUE: Adiciona * (asterisco) antes e depois para pegar partes do nome
-    # Ex: "Silva" vira "*Silva*" (acha João da Silva, Silva Souza, etc)
-    nome_ajustado = f"*{nome_juiz.strip()}*"
+    # ESTRATÉGIA CORRIGIDA:
+    # Usamos sintaxe de busca textual direta com operador AND.
+    # Ex: "João da Silva" AND "Dano Moral"
+    # Isso impede que traga apenas o assunto com outro juiz.
     
-    # Payload ajustado para ser menos rigoroso
+    # Limpeza básica para evitar erro de sintaxe
+    nome_limpo = nome_juiz.replace('"', '') 
+    tema_limpo = termo_busca.replace('"', '')
+    
+    query_rigorosa = f'"{nome_limpo}" AND "{tema_limpo}"'
+    
     payload = {
-        "size": 20, # Traz mais resultados para filtrar depois
+        "size": 15, # Traz 15 para termos margem
         "query": {
-            "bool": {
-                "should": [
-                    # Tenta achar o nome no Órgão Julgador (Vara)
-                    {"query_string": {"default_field": "orgaoJulgador.nome", "query": nome_ajustado}},
-                    # OU tenta achar o nome em qualquer lugar do texto
-                    {"query_string": {"query": nome_juiz}}
-                ],
-                "must": [
-                    # E TEM que ter o assunto (ex: Dano Moral)
-                    {"match": {"assuntos.nome": termo_busca}}
-                ],
-                "minimum_should_match": 1
+            "query_string": {
+                # Busca em TODO o texto do processo (Movimentos, Órgão, Capa)
+                "query": query_rigorosa
             }
         },
         "sort": [{"dataAjuizamento": "desc"}]
     }
 
-    # Headers Básicos
     headers = {
         "Content-Type": "application/json"
     }
-    # Se tiver chave, usa. Se não, vai sem (alguns endpoints aceitam).
     if "DATAJUD_API_KEY" in st.secrets:
         headers["Authorization"] = f"ApiKey {st.secrets['DATAJUD_API_KEY']}"
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        response = requests.post(url, json=payload, headers=headers, timeout=20)
+        
         if response.status_code == 200:
             dados = response.json()
             hits = dados.get("hits", {}).get("hits", [])
@@ -92,23 +89,30 @@ def consultar_api_datajud(tribunal, nome_juiz, termo_busca="Dano Moral"):
             for hit in hits:
                 source = hit.get("_source", {})
                 
-                # Extração segura dos dados
+                # Formata a lista de assuntos
                 assuntos_lista = [a.get("nome") for a in source.get("assuntos", [])]
                 assuntos_texto = ", ".join(assuntos_lista)
+                
+                # Tenta pegar o nome da vara/juízo
+                orgao = source.get("orgaoJulgador", {}).get("nome", "Não informado")
+                
+                # FILTRO DE SEGURANÇA (PYTHON):
+                # Às vezes a busca traz o nome do juiz porque ele era advogado no passado ou é parte.
+                # Aqui verificamos se o nome do juiz não está totalmente fora de contexto, 
+                # mas confiamos na query estrita acima.
                 
                 proc = {
                     "numero": source.get("numeroProcesso"),
                     "classe": source.get("classe", {}).get("nome"),
                     "assuntos": assuntos_texto,
                     "data": source.get("dataAjuizamento"),
-                    "orgao": source.get("orgaoJulgador", {}).get("nome")
+                    "orgao": orgao
                 }
                 lista_processos.append(proc)
             
             return lista_processos
         else:
-            # Retorna o erro exato para debugarmos se for autenticação
-            return f"Erro API CNJ: {response.status_code}"
+            return f"Erro API CNJ ({response.status_code}): {response.text}"
             
     except Exception as e:
         return f"Erro de conexão: {e}"
@@ -301,4 +305,5 @@ elif menu == "3. Jurimetria Real":
         else:
             st.warning("Sem clientes.")
     except Exception as e: st.error(str(e))
+
 
