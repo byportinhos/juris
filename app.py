@@ -13,7 +13,7 @@ st.set_page_config(page_title="Sistema JEC AI - Jurimetria Avançada", layout="w
 # 1. Configurar Google Gemini
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    model = genai.GenerativeModel('gemini-1.5-flash') 
+    model = genai.GenerativeModel('gemini-2.5-flash') 
 except Exception as e:
     st.error("Erro na API Key do Google. Configure os Secrets.")
     st.stop()
@@ -218,3 +218,4 @@ elif menu == "3. Jurimetria Preditiva":
             
     except Exception as e:
         st.error(f"Erro ao buscar dados: {e}")
+
